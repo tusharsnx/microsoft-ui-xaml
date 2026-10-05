@@ -145,7 +145,7 @@ private:
     void OnWindowMessage(_In_ UINT msg, _In_ WPARAM wParam,
                             _In_ LPARAM lParam);
     void OnError(_In_ IErrorService *pErrorService);
-    void OnScriptCallback(_In_ CEventInfo * pEventInfo);
+    void OnScriptCallback(_In_ WPARAM wParam, _In_ CEventInfo * pEventInfo);
 
     void CheckReentrancy();
     void QueueReentrancyCheck();
