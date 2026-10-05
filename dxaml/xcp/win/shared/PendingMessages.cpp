@@ -131,26 +131,33 @@ HRESULT CPendingMessages::PostMessage(
     _In_ LPARAM lParam)
 {
     HRESULT hr = S_OK;
-    CPendingMessage *pPendingMessage = NULL;
+    CPendingMessageList::iterator pendingMessageIt = m_messageList.end();
     XINT32 bAddedToList = FALSE;
 
-    // Add to list of pending messages
-    pPendingMessage =
-            new CPendingMessage(m_pDispatcher, uMsg, wParam, lParam);
+    // Pending messages with resources don't use wParam
+    ASSERT(wParam == 0);
 
+    // Add to list of pending messages
     // Scope the lock
     {
         auto Lock = m_CS.lock();
 
-        IFC(m_messageList.Add(pPendingMessage));
+        pendingMessageIt = m_messageList.emplace(m_messageList.end(), m_pDispatcher, uMsg, 0, lParam);
 
         bAddedToList = TRUE;
+
+        // Create a copy of the iterator on the heap and store its address in wParam.
+        auto pPendingMessageIt = std::make_unique<CPendingMessageList::iterator>(pendingMessageIt);
+        pendingMessageIt->m_wParam = reinterpret_cast<WPARAM>(pPendingMessageIt.get());
 
         // Post message to dispatcher's queue. This must be done
         // before unlocking the message queue as otherwise it
         // could be removed and cleaned up if a ReleaseResources
         // call is made from another thread.
-        IFC(pPendingMessage->PostMessage());
+        IFC(pendingMessageIt->PostMessage());
+
+        // The message was posted succesfully. Release the pointer without freeing it.
+        pPendingMessageIt.release();
     }
 
 Cleanup:
@@ -160,10 +167,8 @@ Cleanup:
         {
             auto Lock = m_CS.lock();
 
-            IGNOREHR(m_messageList.Remove(pPendingMessage, FALSE));
+            IGNOREHR(m_messageList.erase(pendingMessageIt));
         }
-
-        delete pPendingMessage;
     }
 
     return hr;
@@ -183,21 +188,31 @@ HRESULT CPendingMessages::ReleaseResource(
     _In_ LPARAM lParam)
 {
     HRESULT hr = S_OK;
-    CPendingMessage *pPendingMessage = NULL;
 
-    // Scope the lock
+    // wParam holds a reference to this message's resource. Some messages don't have any resources,
+    // in that case, wParam would be 0.
+    if (wParam != 0)
     {
         auto Lock = m_CS.lock();
 
-        // Find message whose resources are to be released
-        IFC_NOTRACE(FindMessage(uMsg, wParam, lParam, &pPendingMessage));
+        // Take ownership of the heap-allocated iterator from wParam so it is deleted after erasing
+        std::unique_ptr<CPendingMessageList::iterator> pItPendingMessage(reinterpret_cast<CPendingMessageList::iterator*>(wParam));
 
-        // Resource is freed in message's destructor, when
-        // message is removed from list
-        IFC(m_messageList.Remove(pPendingMessage));
+        if (pItPendingMessage)
+        {
+            const auto itPendingMessage = *pItPendingMessage;
+
+            // Assert we are deleting the correct message.
+            ASSERT(itPendingMessage->m_uMsg == uMsg &&
+                   itPendingMessage->m_wParam == wParam &&
+                   itPendingMessage->m_lParam == lParam);
+
+            // Resource is freed in message's destructor, when
+            // message is removed from list
+            m_messageList.erase(itPendingMessage);
+        }
     }
 
-Cleanup:
     return hr;
 }
 
@@ -212,54 +227,13 @@ void CPendingMessages::ReleaseResources()
 {
     auto Lock = m_CS.lock();
 
-    // Resources are released in each message's destructor
-    m_messageList.Clean();
-}
-
-//------------------------------------------------------------------------
-//
-//  Method: CPendingMessages FindMessage
-//
-//  Synopsis: Find a message in the list
-//------------------------------------------------------------------------
-
-_Check_return_ HRESULT CPendingMessages::FindMessage(
-    _In_ UINT uMsg,
-    _In_ WPARAM wParam,
-    _In_ LPARAM lParam,
-    _Out_ CPendingMessage **ppPendingMessage)
-{
-    HRESULT hr = S_OK;
-
-    *ppPendingMessage = NULL;
-
-    // Scope the lock
+    // Delete message references within messages
+    for (const auto& msg : m_messageList)
     {
-        auto Lock = m_CS.lock();
-
-        IFCCHECK_NOTRACE(!m_messageList.Empty());
-
-        // Search for message
-        for (auto it = m_messageList.NewestBegin(); it != m_messageList.NewestEnd(); ++it)
-        {
-            CPendingMessage* pPendingMessage = *it;
-            ASSERT(pPendingMessage);
-
-            if ((pPendingMessage->m_uMsg == uMsg)
-                && (pPendingMessage->m_wParam == wParam)
-                && (pPendingMessage->m_lParam == lParam))
-            {
-                // Found
-                *ppPendingMessage = pPendingMessage;
-                goto Cleanup;
-            }
-        }
+        delete reinterpret_cast<CPendingMessages::CPendingMessageList::iterator*>(msg.m_wParam);
     }
 
-    // Search failed
-    IFC_NOTRACE(E_FAIL);
-
-Cleanup:
-    return hr;
+    // Resources are released in each message's destructor
+    m_messageList.clear();
 }
 

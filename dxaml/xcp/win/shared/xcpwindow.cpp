@@ -710,7 +710,7 @@ CXcpDispatcher::OnReentrancyProtectedWindowMessage(
                 // reenable those messages, CoreMessaging will reschedule all the
                 // messages that it skipped.
                 PauseNewDispatch deferReentrancy(this);
-                OnScriptCallback(reinterpret_cast<CEventInfo *>(lParam));
+                OnScriptCallback(wParam, reinterpret_cast<CEventInfo *>(lParam));
                 break;
             }
 
@@ -783,7 +783,7 @@ CXcpDispatcher::OnWindowMessage(
         // do much, so need not protected against reentrancy.
         case WM_SCRIPT_CALL_BACK:
         {
-            OnScriptCallback(reinterpret_cast<CEventInfo *>(lParam));
+            OnScriptCallback(wParam, reinterpret_cast<CEventInfo *>(lParam));
             break;
         }
 
@@ -796,13 +796,13 @@ CXcpDispatcher::OnWindowMessage(
         case WM_SCRIPT_SYNC_INPUT_CALL_BACK:
         {
             CheckReentrancy();
-            OnScriptCallback(reinterpret_cast<CEventInfo *>(lParam));
+            OnScriptCallback(wParam, reinterpret_cast<CEventInfo *>(lParam));
             break;
         }
 
         case WM_SYNC_CHANGING_FOCUS_CALLBACK:
         {
-            OnScriptCallback(reinterpret_cast<CEventInfo *>(lParam));
+            OnScriptCallback(wParam, reinterpret_cast<CEventInfo *>(lParam));
             break;
         }
 
@@ -810,7 +810,7 @@ CXcpDispatcher::OnWindowMessage(
         case WM_SCRIPT_SYNC_LOADED_CALL_BACK:
         case WM_SCRIPT_SYNC_ALLOW_REENTRANCY_CALL_BACK:
         {
-            OnScriptCallback(reinterpret_cast<CEventInfo *>(lParam));
+            OnScriptCallback(wParam, reinterpret_cast<CEventInfo *>(lParam));
             break;
         }
 
@@ -985,6 +985,7 @@ CXcpDispatcher::OnError(
 //------------------------------------------------------------------------
 void
 CXcpDispatcher::OnScriptCallback(
+    _In_ WPARAM wParam,
     _In_ CEventInfo * pEventInfo)
 {
     IXcpBrowserHost* pBH = m_pBH;
@@ -1039,7 +1040,7 @@ CXcpDispatcher::OnScriptCallback(
             // Check that the event handler has not deinited Dispatcher
             if (m_bInit)
             {
-                IGNOREHR(m_pPendingMessages->ReleaseResource(WM_SCRIPT_CALL_BACK, 0, reinterpret_cast<LPARAM>(pEventInfo)));
+                IGNOREHR(m_pPendingMessages->ReleaseResource(WM_SCRIPT_CALL_BACK, wParam, reinterpret_cast<LPARAM>(pEventInfo)));
             }
         }
         ReleaseInterface(core);
@@ -1367,9 +1368,9 @@ void CXcpDispatcher::QueueReentrancyCheck()
 
 void CXcpDispatcher::QueueReentrancyCheckAllowPaused()
 {
-    // Check if XAML dispatch is paused and not trigger the reentrancy guard in that case. 
-    // This does mean there is still a chance of reentrancy,if new mouse input or something comes in. 
-    // Over time it will probably be necessary to process those cases despite the reentrancy. 
+    // Check if XAML dispatch is paused and not trigger the reentrancy guard in that case.
+    // This does mean there is still a chance of reentrancy,if new mouse input or something comes in.
+    // Over time it will probably be necessary to process those cases despite the reentrancy.
     // But that should be much less of an issue than XAML tick, which is a more common case.
     boolean enqueued;
     m_dispatcherQueue->TryEnqueueWithPriority(

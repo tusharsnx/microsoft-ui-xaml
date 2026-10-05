@@ -68,11 +68,6 @@ public:
 private:
     CPendingMessages(_In_ CXcpDispatcher * pDispatcher);
 
-    _Check_return_ HRESULT FindMessage(_In_ UINT uMsg, 
-                    _In_ WPARAM wParam,
-                    _In_ LPARAM lParam, 
-                    _Out_ CPendingMessage **ppPendingMessage);
-    
 private:
     wil::critical_section m_CS;
 
@@ -81,5 +76,6 @@ private:
 
     // Message list
     // Reserve based on values seen in perf runs.
-    CXcpList<CPendingMessage> m_messageList{70};
+    using CPendingMessageList = std::list<CPendingMessage>;
+    CPendingMessageList m_messageList;
 };
