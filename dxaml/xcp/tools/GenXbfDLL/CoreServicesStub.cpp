@@ -466,6 +466,13 @@ HRESULT CCoreServices::ProcessInput(
 }
 
 _Check_return_
+HRESULT CCoreServices::FlushAllPendingInputs()
+{
+    ASSERT(FALSE);
+    RRETURN(E_NOTIMPL);
+}
+
+_Check_return_
 HRESULT CCoreServices::ProcessTouchInteractionCallback(_In_ const xref_ptr<CUIElement> &, _In_ TouchInteractionMsg *)
 {
     ASSERT(FALSE);

@@ -595,6 +595,14 @@ void CXcpDispatcher::ProcessMessage(UINT msg, WPARAM wParam, LPARAM lParam)
     {
         // Messages that are reentrancy protected
         case WM_INTERNAL_TICK:
+        {
+            // Flush pending inputs before we go for Layout.
+            if (m_pBH && m_pBH->GetContextInterface())
+            {
+                IGNOREHR(m_pBH->GetContextInterface()->FlushAllPendingInputs());
+            }
+            [[fallthrough]];
+        }
         case WM_APPLICATION_STARTUP_EVENT_COMPLETE:
         case WM_SCRIPT_SYNC_CALL_BACK:
         case WM_EXECUTE_ON_UI_CALLBACK:

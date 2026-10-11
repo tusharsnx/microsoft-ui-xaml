@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
 #pragma once
@@ -1056,6 +1056,8 @@ public:
          _In_ InputMessage *pMessage,
          _In_opt_ CContentRoot* contentRoot,
          _Out_ XINT32 *fHandled);
+
+    _Check_return_ HRESULT FlushAllPendingInputs();
 
     void RequestReplayPreviousPointerUpdate();
     void ReplayPreviousPointerUpdate();

@@ -44,6 +44,8 @@
 #include "PointerInputTelemetry.h"
 #include "WindowedPopupInputSiteAdapter.h"
 
+#include "winpal.h"
+
 using namespace ContentRootInput;
 
 // Define as 1 (i.e. XCP_TRACE_OUTPUT_MSG) to get DirectManipulation debug outputs, and 0 otherwise
@@ -168,7 +170,169 @@ _Check_return_ HRESULT PointerInputProcessor::RaiseRightTappedEventFromContextMe
     return S_OK;
 }
 
+bool PointerInputProcessor::HasPendingInput() const
+{
+    return m_activeCoalescingInput.has_value() || !m_coalescedInputQueue.empty();
+}
+
+_Check_return_ HRESULT PointerInputProcessor::EnsurePendingInputsFlushed()
+{
+    if (m_isFlushing)
+    {
+        return S_OK;
+    }
+
+    auto flushGuard = wil::scope_exit([&] { m_isFlushing = false; });
+    m_isFlushing = true;
+
+    size_t drainPasses = 0;
+    constexpr size_t maxDrainPasses = 100;
+
+    while (HasPendingInput() && drainPasses++ < maxDrainPasses)
+    {
+        if (m_activeCoalescingInput.has_value())
+        {
+            m_coalescedInputQueue.push_back(std::move(*m_activeCoalescingInput));
+            m_activeCoalescingInput.reset();
+        }
+
+        auto toFlush = std::move(m_coalescedInputQueue);
+        m_coalescedInputQueue.clear();
+
+        for (auto& entry : toFlush)
+        {
+            XINT32 coreHandled = FALSE;
+            IGNOREHR(ProcessPointerInputCore(&entry.m_msg, &coreHandled));
+        }
+    }
+
+    return S_OK;
+}
+
+bool PointerInputProcessor::IsHighPriority(_In_ const InputMessage* pMsg)
+{
+    return pMsg->IsReplayedMessage()
+        || (pMsg->m_msgID != XCP_POINTERUPDATE && pMsg->m_msgID != XCP_POINTERWHEELCHANGED);
+}
+
 _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
+    _In_ InputMessage *pMsg,
+    _Out_ XINT32 *handled)
+{
+    IFCPTR_RETURN(pMsg);
+    IFCPTR_RETURN(handled);
+
+    if (IsHighPriority(pMsg))
+    {
+        IFC_RETURN(EnsurePendingInputsFlushed());
+        return ProcessPointerInputCore(pMsg, handled);
+    }
+
+    auto getCoalescedInputEntry = [](const InputMessage* msg) -> CoalescedInputEntry
+    {
+        CoalescedInputEntry entry;
+        entry.m_msg = *msg;
+        entry.m_spPointerPoint = msg->m_pPointerPointNoRef;
+        entry.m_spPointerEventArgs = msg->m_pPointerEventArgsNoRef;
+        entry.m_msg.m_pPointerPointNoRef = entry.m_spPointerPoint.Get();
+        entry.m_msg.m_pPointerEventArgsNoRef = entry.m_spPointerEventArgs.Get();
+
+        if (msg->m_hPlatformPacket)
+        {
+            entry.m_spMsgPacket = std::make_shared<MsgPacket>(*static_cast<const MsgPacket*>(msg->m_hPlatformPacket));
+            entry.m_msg.m_hPlatformPacket = entry.m_spMsgPacket.get();
+        }
+        else
+        {
+            entry.m_msg.m_hPlatformPacket = nullptr;
+        }
+
+        return entry;
+    };
+
+    const auto hadPending = HasPendingInput();
+
+    if (pMsg->m_msgID == XCP_POINTERUPDATE)
+    {
+        const UINT32 pointerId = pMsg->m_pointerInfo.m_pointerId;
+
+        if (m_activeCoalescingInput.has_value())
+        {
+            auto& active = *m_activeCoalescingInput;
+            const auto isSameMsgKind = (active.m_msg.m_msgID == pMsg->m_msgID) && (active.m_msg.m_bIsSecondaryMessage == pMsg->m_bIsSecondaryMessage);
+            const auto isSamePointer = active.m_msg.m_pointerInfo.m_pointerId == pointerId;
+            const auto canCoalesce = isSameMsgKind && isSamePointer;
+
+            if (canCoalesce)
+            {
+                active.m_msg.m_pointerInfo = pMsg->m_pointerInfo;
+
+                active.m_msg.m_xPos = pMsg->m_xPos;
+                active.m_msg.m_yPos = pMsg->m_yPos;
+                active.m_msg.m_modifierKeys = pMsg->m_modifierKeys;
+                active.m_msg.m_physicalKeyStatus = pMsg->m_physicalKeyStatus;
+
+                active.m_spPointerPoint = pMsg->m_pPointerPointNoRef;
+                active.m_spPointerEventArgs = pMsg->m_pPointerEventArgsNoRef;
+                active.m_msg.m_pPointerPointNoRef = active.m_spPointerPoint.Get();
+                active.m_msg.m_pPointerEventArgsNoRef = active.m_spPointerEventArgs.Get();
+
+                if (pMsg->m_hPlatformPacket)
+                {
+                    active.m_spMsgPacket = std::make_shared<MsgPacket>(*static_cast<const MsgPacket*>(pMsg->m_hPlatformPacket));
+                    active.m_msg.m_hPlatformPacket = active.m_spMsgPacket.get();
+                }
+                else
+                {
+                    active.m_spMsgPacket.reset();
+                    active.m_msg.m_hPlatformPacket = nullptr;
+                }
+            }
+            else
+            {
+                m_coalescedInputQueue.push_back(std::move(active));
+                m_activeCoalescingInput = getCoalescedInputEntry(pMsg);
+            }
+        }
+        else
+        {
+            m_activeCoalescingInput = getCoalescedInputEntry(pMsg);
+        }
+    }
+    else // XCP_POINTERWHEELCHANGED
+    {
+        if (m_activeCoalescingInput.has_value())
+        {
+            m_coalescedInputQueue.push_back(std::move(*m_activeCoalescingInput));
+            m_activeCoalescingInput.reset();
+        }
+
+        m_coalescedInputQueue.push_back(getCoalescedInputEntry(pMsg));
+    }
+
+    if (!hadPending)
+    {
+        m_inputManager.m_coreServices.RequestAdditionalFrame(RequestFrameReason::InputManager);
+    }
+
+    if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeMouse)
+    {
+        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Mouse);
+    }
+    else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeTouch)
+    {
+        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Touch);
+    }
+    else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypePen)
+    {
+        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Pen);
+    }
+
+    *handled = TRUE;
+    return S_OK;
+}
+
+_Check_return_ HRESULT PointerInputProcessor::ProcessPointerInputCore(
     _In_ InputMessage *pMsg,
     _Out_ XINT32 *handled)
 {

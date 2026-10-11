@@ -3,6 +3,11 @@
 
 #pragma once
 
+#include <memory>
+#include <optional>
+#include <vector>
+#include <wrl/client.h>
+
 #include "paltypes.h"
 #include "Events.h"
 #include "XcpList.h"
@@ -15,9 +20,18 @@ struct PointerInfo;
 class CPointerEventArgs;
 struct REQUEST;
 class CPointer;
+struct MsgPacket;
 
 namespace ContentRootInput
 {
+    struct CoalescedInputEntry
+    {
+        InputMessage m_msg{};
+        wrl::ComPtr<ixp::IPointerPoint> m_spPointerPoint;
+        wrl::ComPtr<ixp::IPointerEventArgs> m_spPointerEventArgs;
+        std::shared_ptr<MsgPacket> m_spMsgPacket;
+    };
+
     class PointerInputProcessor
     {
     public:
@@ -34,6 +48,14 @@ namespace ContentRootInput
         _Check_return_ HRESULT RaiseRightTappedEventFromContextMenu(_Out_ bool* handled);
 
         _Check_return_ HRESULT ProcessPointerInput(
+            _In_ InputMessage *pMsg,
+            _Out_ XINT32 *handled);
+
+        bool HasPendingInput() const;
+        _Check_return_ HRESULT EnsurePendingInputsFlushed();
+        static bool IsHighPriority(_In_ const InputMessage* pMsg);
+
+        _Check_return_ HRESULT ProcessPointerInputCore(
             _In_ InputMessage *pMsg,
             _Out_ XINT32 *handled);
 
@@ -134,6 +156,10 @@ namespace ContentRootInput
 
         xref_ptr<CPointer> GetPointerForPointerInfo(_In_ const PointerInfo& pointerInfo);
         xref_ptr<CPointer> m_cachedPointer;
+
+        std::optional<CoalescedInputEntry> m_activeCoalescingInput;
+        std::vector<CoalescedInputEntry> m_coalescedInputQueue;
+        bool m_isFlushing = false;
 
     };
 };

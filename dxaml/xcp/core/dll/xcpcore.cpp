@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
 #include "precomp.h"
@@ -1395,6 +1395,27 @@ CCoreServices::ProcessInput(
     }
     return S_OK;
 
+}
+
+//------------------------------------------------------------------------
+//
+//  Method: FlushAllPendingInputs
+//
+//  Synopsis:
+//      Flushes pending coalesced input events across all content roots.
+//
+//------------------------------------------------------------------------
+_Check_return_ HRESULT
+CCoreServices::FlushAllPendingInputs()
+{
+    for (const auto& contentRoot : m_contentRootCoordinator.GetContentRoots())
+    {
+        if (contentRoot)
+        {
+            IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
+        }
+    }
+    return S_OK;
 }
 
 //------------------------------------------------------------------------

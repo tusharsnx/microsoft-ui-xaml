@@ -830,6 +830,7 @@ HRESULT CInputServices::ProcessInput(_In_ InputMessage *pMsg, _In_ CContentRoot*
     switch (pMsg->m_msgID)
     {
     case XCP_DEACTIVATE:
+        IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
         // If we lose activation, then we need to reset the m_fKeyDownHandled flag
         // so that if we receive a XCP_CHAR it isn't ignored
         contentRoot->GetInputManager().SetKeyDownHandled(false);
@@ -837,6 +838,7 @@ HRESULT CInputServices::ProcessInput(_In_ InputMessage *pMsg, _In_ CContentRoot*
         __fallthrough;
     case XCP_ACTIVATE:
         {
+            IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
             const bool shiftPressed = ((pMsg->m_modifierKeys & KEY_MODIFIER_SHIFT) != 0);
             const bool isActivating = (pMsg->m_msgID == XCP_ACTIVATE);
             IFC_RETURN(contentRoot->GetInputManager().ProcessWindowActivation(shiftPressed, isActivating));
@@ -856,6 +858,7 @@ HRESULT CInputServices::ProcessInput(_In_ InputMessage *pMsg, _In_ CContentRoot*
         shouldPlayInteractionSound = true;
         break;
     case XCP_DMPOINTERHITTEST:
+        IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
         IFC_RETURN(ProcessDirectManipulationPointerHitTest(pMsg, contentRoot, handled));
         break;
     case XCP_KEYUP:
@@ -863,6 +866,7 @@ HRESULT CInputServices::ProcessInput(_In_ InputMessage *pMsg, _In_ CContentRoot*
     case XCP_CHAR:
     case XCP_DEADCHAR:
     {
+        IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
         bool bHandled = false;
         IFC_RETURN(contentRoot->GetInputManager().ProcessKeyboardInput(
             pMsg->m_platformKeyCode,
@@ -877,19 +881,23 @@ HRESULT CInputServices::ProcessInput(_In_ InputMessage *pMsg, _In_ CContentRoot*
     }
     case XCP_GOTFOCUS:
     case XCP_LOSTFOCUS:
+        IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
         IFC_RETURN(contentRoot->GetInputManager().ProcessFocusInput(pMsg, handled));
         break;
     case XCP_CONTEXTMENU:
     {
+        IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
         bool bHandled = false;
         IFC_RETURN(contentRoot->GetInputManager().RaiseRightTappedEventFromContextMenu(&bHandled));
         *handled = bHandled;
         break;
     }
     case XCP_INPUTLANGCHANGE:
+        IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
         IFC_RETURN(ProcessInputLanguageChange(pMsg, contentRoot, handled));
         break;
     case XCP_WINDOWMOVE:
+        IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
         IFC_RETURN(ProcessWindowMove(pMsg, contentRoot));
         break;
     case XCP_NULL:
