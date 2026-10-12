@@ -125,6 +125,9 @@ namespace ContentRootInput
 {
     struct CoalescedInputEntry
     {
+        CoalescedInputEntry() = default;
+        explicit CoalescedInputEntry(const InputMessage& msg);
+
         InputMessage m_msg{};
         wrl::ComPtr<ixp::IPointerPoint> m_spPointerPoint;
         wrl::ComPtr<ixp::IPointerEventArgs> m_spPointerEventArgs;
@@ -156,8 +159,20 @@ namespace ContentRootInput
 }
 ```
 
-### 4.2 Helper & Classification Logic in `PointerInputProcessor.cpp`
+### 4.2 Helper & Construction Logic in `PointerInputProcessor.cpp`
 ```cpp
+CoalescedInputEntry::CoalescedInputEntry(const InputMessage& msg)
+    : m_msg(msg)
+    , m_spPointerPoint(msg.m_pPointerPointNoRef)
+    , m_spPointerEventArgs(msg.m_pPointerEventArgsNoRef)
+{
+    if (msg.m_hPlatformPacket)
+    {
+        m_spMsgPacket = std::make_shared<MsgPacket>(*static_cast<const MsgPacket*>(msg.m_hPlatformPacket));
+        m_msg.m_hPlatformPacket = m_spMsgPacket.get();
+    }
+}
+
 /* static */ bool PointerInputProcessor::IsHighPriority(_In_ const InputMessage* pMsg)
 {
     return pMsg->IsReplayedMessage()
@@ -180,76 +195,23 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
         return ProcessPointerInputCore(pMsg, handled);
     }
 
-    auto getCoalescedInputEntry = [](const InputMessage* msg) -> CoalescedInputEntry
-    {
-        CoalescedInputEntry entry;
-        entry.m_msg = *msg;
-        entry.m_spPointerPoint = msg->m_pPointerPointNoRef;
-        entry.m_spPointerEventArgs = msg->m_pPointerEventArgsNoRef;
-        entry.m_msg.m_pPointerPointNoRef = entry.m_spPointerPoint.Get();
-        entry.m_msg.m_pPointerEventArgsNoRef = entry.m_spPointerEventArgs.Get();
-
-        if (msg->m_hPlatformPacket)
-        {
-            entry.m_spMsgPacket = std::make_shared<MsgPacket>(*static_cast<const MsgPacket*>(msg->m_hPlatformPacket));
-            entry.m_msg.m_hPlatformPacket = entry.m_spMsgPacket.get();
-        }
-        else
-        {
-            entry.m_msg.m_hPlatformPacket = nullptr;
-        }
-
-        return entry;
-    };
-
     const auto hadPending = HasPendingInput();
 
     if (pMsg->m_msgID == XCP_POINTERUPDATE)
     {
-        const UINT32 pointerId = pMsg->m_pointerInfo.m_pointerId;
-
         if (m_activeCoalescingInput.has_value())
         {
             auto& active = *m_activeCoalescingInput;
             const auto isSameMsgKind = (active.m_msg.m_msgID == pMsg->m_msgID) && (active.m_msg.m_bIsSecondaryMessage == pMsg->m_bIsSecondaryMessage);
-            const auto isSamePointer = active.m_msg.m_pointerInfo.m_pointerId == pointerId;
-            const auto canCoalesce = isSameMsgKind && isSamePointer;
+            const auto isSamePointer = (active.m_msg.m_pointerInfo.m_pointerId == pMsg->m_pointerInfo.m_pointerId);
+            const auto canCoalesceWithPreviousInput = isSameMsgKind && isSamePointer;
 
-            if (canCoalesce)
-            {
-                active.m_msg.m_pointerInfo = pMsg->m_pointerInfo;
-
-                active.m_msg.m_xPos = pMsg->m_xPos;
-                active.m_msg.m_yPos = pMsg->m_yPos;
-                active.m_msg.m_modifierKeys = pMsg->m_modifierKeys;
-                active.m_msg.m_physicalKeyStatus = pMsg->m_physicalKeyStatus;
-
-                active.m_spPointerPoint = pMsg->m_pPointerPointNoRef;
-                active.m_spPointerEventArgs = pMsg->m_pPointerEventArgsNoRef;
-                active.m_msg.m_pPointerPointNoRef = active.m_spPointerPoint.Get();
-                active.m_msg.m_pPointerEventArgsNoRef = active.m_spPointerEventArgs.Get();
-
-                if (pMsg->m_hPlatformPacket)
-                {
-                    active.m_spMsgPacket = std::make_shared<MsgPacket>(*static_cast<const MsgPacket*>(pMsg->m_hPlatformPacket));
-                    active.m_msg.m_hPlatformPacket = active.m_spMsgPacket.get();
-                }
-                else
-                {
-                    active.m_spMsgPacket.reset();
-                    active.m_msg.m_hPlatformPacket = nullptr;
-                }
-            }
-            else
+            if (!canCoalesceWithPreviousInput)
             {
                 m_coalescedInputQueue.push_back(std::move(active));
-                m_activeCoalescingInput = getCoalescedInputEntry(pMsg);
             }
         }
-        else
-        {
-            m_activeCoalescingInput = getCoalescedInputEntry(pMsg);
-        }
+        m_activeCoalescingInput = CoalescedInputEntry(*pMsg);
     }
     else // XCP_POINTERWHEELCHANGED
     {
@@ -259,7 +221,7 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
             m_activeCoalescingInput.reset();
         }
 
-        m_coalescedInputQueue.push_back(getCoalescedInputEntry(pMsg));
+        m_coalescedInputQueue.push_back(CoalescedInputEntry(*pMsg));
     }
 
     if (!hadPending)

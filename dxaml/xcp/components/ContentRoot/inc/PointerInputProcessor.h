@@ -26,9 +26,18 @@ namespace ContentRootInput
 {
     struct CoalescedInputEntry
     {
+        CoalescedInputEntry() = default;
+        explicit CoalescedInputEntry(const InputMessage& msg);
+
         InputMessage m_msg{};
+
+        // These hold strong refs to InputMessage's internal refs.
         wrl::ComPtr<ixp::IPointerPoint> m_spPointerPoint;
         wrl::ComPtr<ixp::IPointerEventArgs> m_spPointerEventArgs;
+
+        // InputMessage::hPlatformPacket is a handle to a stack object
+        // and will get deleted after the caller exits. So, we create
+        // our own copy of it.
         std::shared_ptr<MsgPacket> m_spMsgPacket;
     };
 
