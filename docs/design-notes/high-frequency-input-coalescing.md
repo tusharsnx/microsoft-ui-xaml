@@ -7,7 +7,7 @@ This feature introduces an input coalescing pipeline in XAML core that:
 1. Coalesces consecutive high-frequency pointer updates (`XCP_POINTERUPDATE`) in-place and defers wheel updates (`XCP_POINTERWHEELCHANGED`) in an ordered queue per `CContentRoot`.
 2. Preserves chronological interleaving order between different pointers and disparate input messages.
 3. Automatically requests a frame render upon receiving the first coalesced input and flushes all pending coalesced events immediately before frame rendering (`WM_INTERNAL_TICK`).
-4. Flushes pending inputs immediately before processing any high-priority input (button clicks, pointer down/up, keyboard, focus, activation, replayed messages) to guarantee strict event order.
+4. Immediately handles high-priority input (pointer down/up, replayed messages) if no pending inputs exist; if pending inputs exist or a flush is in progress, queues the high-priority input and flushes the queue, guaranteeing that new events arriving during flushing are queued and drained in the same pass.
 5. Fully drains the queue during flushes, handling any new events generated synchronously by reentrant message pumps.
 6. Preserves the lifetime of platform message packets (`MsgPacket`) and WinRT COM objects (`IPointerPoint`, `IPointerEventArgs`) to ensure full compatibility with Direct Manipulation and XAML routed events.
 
@@ -26,6 +26,8 @@ flowchart TD
     end
 
     subgraph PointerInputProcessor["PointerInputProcessor (per CContentRoot)"]
+        HasPending{"Has pending inputs\nor flushing in progress?"}
+        PushHPQueue["Push active (if any) & HP input\nto coalescedInputQueue"]
         CheckMsgKind{"Message Type?"}
         CheckMove{"Same pointer ID &\nmessage kind?"}
         MergeMove["Merge in-place into activeCoalescingInput\n(latest position, time, modifiers, pointer point)"]
@@ -37,7 +39,7 @@ flowchart TD
         RetHandled["Return *handled = TRUE; S_OK;"]
 
         FlushProc["EnsurePendingInputsFlushed()\nDrain active & queue to local buffer,\ndispatch each via ProcessPointerInputCore"]
-        CoreProc["Process Current High-Priority Input\nvia ProcessPointerInputCore"]
+        CoreProc["Process Immediately\nvia ProcessPointerInputCore"]
     end
 
     subgraph Dispatcher["CXcpDispatcher::ProcessMessage"]
@@ -47,8 +49,10 @@ flowchart TD
     end
 
     IncomingInput --> IsHighPri
-    IsHighPri -- "Yes (High-Priority)" --> FlushProc
-    FlushProc --> CoreProc
+    IsHighPri -- "Yes (High-Priority)" --> HasPending
+    HasPending -- "No" --> CoreProc
+    HasPending -- "Yes" --> PushHPQueue
+    PushHPQueue --> FlushProc
 
     IsHighPri -- "No (Coalescible)" --> CheckMsgKind
     CheckMsgKind -- "XCP_POINTERUPDATE" --> CheckMove
@@ -97,14 +101,15 @@ flowchart TD
 
 ### 3.4 Flushing Hooks
 Flushing occurs at three precise moments:
-1. **Before any high-priority pointer event**: handled directly in `PointerInputProcessor::ProcessPointerInput`.
+1. **On high-priority pointer events**: in `PointerInputProcessor::ProcessPointerInput`, if no inputs are pending and no flush is in progress, high-priority events are processed immediately via `ProcessPointerInputCore`. If pending inputs exist or a flush is actively in progress, the high-priority input is pushed into `m_coalescedInputQueue` (after committing any `m_activeCoalescingInput`) and `EnsurePendingInputsFlushed()` is called, ensuring that prior events are drained first and any new events arriving during flushing are queued and processed in the same pass.
 2. **Before any other high-priority input (keyboard, focus, window)**: handled in `CInputServices::ProcessInput` via `contentRoot->GetInputManager().EnsurePendingInputsFlushed()`.
 3. **Before frame rendering**: in `CXcpDispatcher::ProcessMessage`, on `WM_INTERNAL_TICK`, calling `m_pBH->GetContextInterface()->FlushAllPendingInputs()` *before* invoking `OnReentrancyProtectedWindowMessage`.
 
-### 3.5 Complete Draining with Reentrancy Protection
+### 3.5 Complete Draining in a Single Loop with Reentrancy Protection
 * `EnsurePendingInputsFlushed()` guards against reentrant flush calls via `m_isFlushing`.
-* A `while (HasPendingInput() && drainPasses++ < maxDrainPasses)` drain loop transfers any active input and all queued entries (`std::move(m_coalescedInputQueue)`) to a local buffer each iteration.
-* Any new events that arrive while dispatching the batch (e.g., if an event handler invokes a modal dialog or nested message pump like `MessageBox` or `Dispatcher.PushFrame`) are queued into the member queue and subsequently drained by the next pass of the `while` loop before `EnsurePendingInputsFlushed()` returns.
+* A single `while (HasPendingInput())` loop completely drains the queue by popping each entry (`m_coalescedInputQueue.pop_front()`) and dispatching it via `ProcessPointerInputCore`.
+* If `m_coalescedInputQueue` is empty but `m_activeCoalescingInput` has an uncommitted move, it is moved into the queue and dispatched next.
+* Any new events that arrive while dispatching an event (e.g., if an event handler invokes a modal dialog or nested message pump like `MessageBox` or `Dispatcher.PushFrame`) are appended to `m_coalescedInputQueue` or merged into `m_activeCoalescingInput`. The single loop continues iterating until both are fully drained before `EnsurePendingInputsFlushed()` returns.
 
 ### 3.6 Lifetime Preservation of Platform & COM Objects
 * In synchronous processing, `MsgPacket` was allocated on the stack in `JupiterControl::HandlePointerMessage`, and `pMsg->m_hPlatformPacket` pointed to this stack variable.
@@ -117,172 +122,47 @@ Flushing occurs at three precise moments:
 
 ## 4. Implementation Details
 
-### 4.1 Data Structures in `PointerInputProcessor.h`
-```cpp
-struct MsgPacket; // Forward declaration keeps header decoupled from winpal.h
+### 4.1 Data Structures (`PointerInputProcessor.h`)
+* **`CoalescedInputEntry`**: Encapsulates a deferred input message along with lifetime-extended references:
+  * `InputMessage m_msg`: The copied input message data.
+  * `wrl::ComPtr<ixp::IPointerPoint> m_spPointerPoint`: Strong reference to the WinRT pointer point object.
+  * `wrl::ComPtr<ixp::IPointerEventArgs> m_spPointerEventArgs`: Strong reference to the WinRT pointer event arguments.
+  * `std::shared_ptr<MsgPacket> m_spMsgPacket`: Heap-allocated copy of the platform packet to prevent dangling pointer references once the ingestion stack frame exits.
+* **`PointerInputProcessor` State**:
+  * `std::optional<CoalescedInputEntry> m_activeCoalescingInput`: Holds the most recent coalescible pointer move (`XCP_POINTERUPDATE`) for in-place merging.
+  * `std::deque<CoalescedInputEntry> m_coalescedInputQueue`: Ordered FIFO queue for chronological interleaving of deferred events (moves, wheel turns, and queued high-priority events).
+  * `bool m_isFlushing`: Guard flag preventing reentrant flushes while events are being dispatched.
 
-namespace ContentRootInput
-{
-    struct CoalescedInputEntry
-    {
-        CoalescedInputEntry() = default;
-        explicit CoalescedInputEntry(const InputMessage& msg);
+### 4.2 Helper & Classification Logic
+* **`CoalescedInputEntry` Construction**:
+  * Copies the input message and acquires strong COM references to the pointer point and event arguments.
+  * Clones any stack-allocated platform `MsgPacket` onto the heap via `std::make_shared` and re-points `m_msg.m_hPlatformPacket` to the heap copy.
+* **`PointerInputProcessor::IsHighPriority`**:
+  * Classifies an input message as high priority if it is a synthetic replayed message or any message type other than `XCP_POINTERUPDATE` and `XCP_POINTERWHEELCHANGED` (e.g. pointer pressed/released, enter/leave, capture changes).
 
-        InputMessage m_msg{};
-        wrl::ComPtr<ixp::IPointerPoint> m_spPointerPoint;
-        wrl::ComPtr<ixp::IPointerEventArgs> m_spPointerEventArgs;
-        std::shared_ptr<MsgPacket> m_spMsgPacket;
-    };
+### 4.3 Ingestion Pipeline (`PointerInputProcessor::ProcessPointerInput`)
+* **High-Priority Inputs**:
+  * If no inputs are pending and no flush is active, immediately processes the event synchronously via `ProcessPointerInputCore`.
+  * If pending inputs exist or a flush is currently in progress, commits any active coalescing move into `m_coalescedInputQueue`, appends the high-priority input to the queue, and calls `EnsurePendingInputsFlushed()`.
+* **Coalescible Pointer Moves (`XCP_POINTERUPDATE`)**:
+  * Evaluates whether the incoming move can coalesce with `m_activeCoalescingInput` (matching pointer ID and secondary message status).
+  * If coalescible, merges the move in-place by overwriting coordinates, modifier keys, physical key state, and references.
+  * If not coalescible (different pointer ID or message type), pushes the existing active input to `m_coalescedInputQueue` and stores the incoming move as the new active input.
+* **Coalescible Pointer Wheel (`XCP_POINTERWHEELCHANGED`)**:
+  * Commits any active coalescing move to `m_coalescedInputQueue`.
+  * Appends the wheel event to `m_coalescedInputQueue` (preserving individual wheel delta packets).
+* **Frame Request & Device Tracking**:
+  * On the first deferred input, schedules a frame render tick via `RequestAdditionalFrame(RequestFrameReason::InputManager)`.
+  * Updates the last input device type on `CInputManager`.
+  * Synchronously returns `*handled = TRUE` to the platform so the OS does not bubble or synthesize fallback mouse messages.
 
-    class PointerInputProcessor
-    {
-    public:
-        PointerInputProcessor(_In_ CInputManager& inputManager);
-
-        bool HasPendingInput() const;
-        _Check_return_ HRESULT EnsurePendingInputsFlushed();
-        static bool IsHighPriority(_In_ const InputMessage* pMsg);
-
-        _Check_return_ HRESULT ProcessPointerInput(
-            _In_ InputMessage *pMsg,
-            _Out_ XINT32 *handled);
-
-        _Check_return_ HRESULT ProcessPointerInputCore(
-            _In_ InputMessage *pMsg,
-            _Out_ XINT32 *handled);
-
-    private:
-        std::optional<CoalescedInputEntry> m_activeCoalescingInput;
-        std::vector<CoalescedInputEntry> m_coalescedInputQueue;
-        bool m_isFlushing = false;
-    };
-}
-```
-
-### 4.2 Helper & Construction Logic in `PointerInputProcessor.cpp`
-```cpp
-CoalescedInputEntry::CoalescedInputEntry(const InputMessage& msg)
-    : m_msg(msg)
-    , m_spPointerPoint(msg.m_pPointerPointNoRef)
-    , m_spPointerEventArgs(msg.m_pPointerEventArgsNoRef)
-{
-    if (msg.m_hPlatformPacket)
-    {
-        m_spMsgPacket = std::make_shared<MsgPacket>(*static_cast<const MsgPacket*>(msg.m_hPlatformPacket));
-        m_msg.m_hPlatformPacket = m_spMsgPacket.get();
-    }
-}
-
-/* static */ bool PointerInputProcessor::IsHighPriority(_In_ const InputMessage* pMsg)
-{
-    return pMsg->IsReplayedMessage()
-        || (pMsg->m_msgID != XCP_POINTERUPDATE && pMsg->m_msgID != XCP_POINTERWHEELCHANGED);
-}
-```
-
-### 4.3 Coalescing Implementation in `PointerInputProcessor::ProcessPointerInput`
-```cpp
-_Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
-    _In_ InputMessage *pMsg,
-    _Out_ XINT32 *handled)
-{
-    IFCPTR_RETURN(pMsg);
-    IFCPTR_RETURN(handled);
-
-    if (IsHighPriority(pMsg))
-    {
-        IFC_RETURN(EnsurePendingInputsFlushed());
-        return ProcessPointerInputCore(pMsg, handled);
-    }
-
-    const auto hadPending = HasPendingInput();
-
-    if (pMsg->m_msgID == XCP_POINTERUPDATE)
-    {
-        if (m_activeCoalescingInput.has_value())
-        {
-            auto& active = *m_activeCoalescingInput;
-            const auto isSameMsgKind = (active.m_msg.m_msgID == pMsg->m_msgID) && (active.m_msg.m_bIsSecondaryMessage == pMsg->m_bIsSecondaryMessage);
-            const auto isSamePointer = (active.m_msg.m_pointerInfo.m_pointerId == pMsg->m_pointerInfo.m_pointerId);
-            const auto canCoalesceWithPreviousInput = isSameMsgKind && isSamePointer;
-
-            if (!canCoalesceWithPreviousInput)
-            {
-                m_coalescedInputQueue.push_back(std::move(active));
-            }
-        }
-        m_activeCoalescingInput = CoalescedInputEntry(*pMsg);
-    }
-    else // XCP_POINTERWHEELCHANGED
-    {
-        if (m_activeCoalescingInput.has_value())
-        {
-            m_coalescedInputQueue.push_back(std::move(*m_activeCoalescingInput));
-            m_activeCoalescingInput.reset();
-        }
-
-        m_coalescedInputQueue.push_back(CoalescedInputEntry(*pMsg));
-    }
-
-    if (!hadPending)
-    {
-        m_inputManager.m_coreServices.RequestAdditionalFrame(RequestFrameReason::InputManager);
-    }
-
-    if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeMouse)
-    {
-        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Mouse);
-    }
-    else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeTouch)
-    {
-        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Touch);
-    }
-    else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypePen)
-    {
-        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Pen);
-    }
-
-    *handled = TRUE;
-    return S_OK;
-}
-```
-
-### 4.4 Draining Loop in `PointerInputProcessor::EnsurePendingInputsFlushed`
-```cpp
-_Check_return_ HRESULT PointerInputProcessor::EnsurePendingInputsFlushed()
-{
-    if (m_isFlushing)
-    {
-        return S_OK;
-    }
-
-    auto flushGuard = wil::scope_exit([&] { m_isFlushing = false; });
-    m_isFlushing = true;
-
-    size_t drainPasses = 0;
-    constexpr size_t maxDrainPasses = 100;
-
-    while (HasPendingInput() && drainPasses++ < maxDrainPasses)
-    {
-        if (m_activeCoalescingInput.has_value())
-        {
-            m_coalescedInputQueue.push_back(std::move(*m_activeCoalescingInput));
-            m_activeCoalescingInput.reset();
-        }
-
-        auto toFlush = std::move(m_coalescedInputQueue);
-        m_coalescedInputQueue.clear();
-
-        for (auto& entry : toFlush)
-        {
-            XINT32 coreHandled = FALSE;
-            IGNOREHR(ProcessPointerInputCore(&entry.m_msg, &coreHandled));
-        }
-    }
-
-    return S_OK;
-}
-```
+### 4.4 Draining Pipeline (`PointerInputProcessor::EnsurePendingInputsFlushed`)
+* **Reentrancy Protection**: Uses `m_isFlushing` with a scope guard to prevent nested reentrant flush invocations.
+* **Single-Loop Complete Draining**:
+  * Executes a single `while (HasPendingInput())` loop.
+  * When `m_coalescedInputQueue` is empty, commits any remaining `m_activeCoalescingInput` into the queue.
+  * Pops the front entry from `m_coalescedInputQueue` and dispatches it via `ProcessPointerInputCore`.
+  * Any new events arriving synchronously during dispatch (e.g. from nested message pumps spun by event handlers) are appended to `m_coalescedInputQueue` or merged into `m_activeCoalescingInput`, and subsequently drained by the same loop before returning.
 
 ### 4.5 Direct Manipulation Integration
 During `ProcessPointerInputCore` for `XCP_POINTERWHEELCHANGED`:
