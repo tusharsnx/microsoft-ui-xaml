@@ -233,6 +233,51 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
 
     const bool hasPending = HasPendingInput();
 
+    // Update the last input device type.
+    // This makes sure that the future events are correctly handled
+    // in the context of the current event's device type.
+    {
+        std::shared_ptr<CPointerState> pointerState;
+
+        const auto pointerId = pMsg->m_pointerInfo.m_pointerId;
+        const auto& mapPointerState = m_inputManager.m_coreServices.GetInputServices()->GetMapPointerState();
+        if (mapPointerState.ContainsKey(pointerId))
+        {
+            IFC_RETURN(mapPointerState.Get(pointerId, pointerState));
+        }
+
+        // It is possible (and probable) that the system will generate intermittent pointer update
+        // messages that don't move the cursor.  The reason for this is probably steeped in the
+        // history of windows before frameworks, but it can cause the appearance of user input 
+        // when ther wasn't any.  This affects some of our processing when we want to know if the
+        // user is using UIA or not.  So, if the pointer is of the same type and hasn't move, then
+        // we will assume tht it is a geneated input and tell SetLastInputDeviceType that it should
+        // be ignored pertaining to UIA.
+        bool keepUIAFocusState = pointerState && pMsg->m_msgID == XCP_POINTERUPDATE &&
+                                pointerState->GetPointerInputType() == pMsg->m_pointerInfo.m_pointerInputType &&
+                                pointerState->GetLastPosition().x == pMsg->m_pointerInfo.m_pointerLocation.x &&
+                                pointerState->GetLastPosition().y == pMsg->m_pointerInfo.m_pointerLocation.y;
+
+        if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeMouse)
+        {
+            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Mouse, keepUIAFocusState);
+        }
+        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeTouch)
+        {
+            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Touch, keepUIAFocusState);
+        }
+        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypePen)
+        {
+            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Pen, keepUIAFocusState);
+        }
+        else
+        {
+            ASSERT(FALSE);
+        }
+
+        m_inputManager.m_coreServices.GetInputServices()->SetLastInputDeviceType(pMsg->m_pointerInfo.m_pointerInputType);
+    }
+
     if (IsHighPriority(pMsg))
     {
         // Skip the queue and directly process the event when there are no pending events.
@@ -288,19 +333,6 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
         {
             m_inputManager.m_coreServices.RequestAdditionalFrame(RequestFrameReason::InputManager);
         }
-
-        if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeMouse)
-        {
-            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Mouse);
-        }
-        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeTouch)
-        {
-            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Touch);
-        }
-        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypePen)
-        {
-            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Pen);
-        }
     }
 
     // Always mark the event as handled.
@@ -353,42 +385,6 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInputInner(
     if (mapPointerState.ContainsKey(pointerId))
     {
         IFC(mapPointerState.Get(pointerId, pointerState));
-    }
-
-    // Set the last input device type.  If this is a replay message, don't set the last input
-    // device type since that might tromp on the value for keyboard or gamepad.
-    if (!pMsg->IsReplayedMessage())
-    {
-        // It is possible (and probable) that the system will generate intermittent pointer update
-        // messages that don't move the cursor.  The reason for this is probably steeped in the
-        // history of windows before frameworks, but it can cause the appearance of user input 
-        // when ther wasn't any.  This affects some of our processing when we want to know if the
-        // user is using UIA or not.  So, if the pointer is of the same type and hasn't move, then
-        // we will assume tht it is a geneated input and tell SetLastInputDeviceType that it should
-        // be ignored pertaining to UIA.
-        bool keepUIAFocusState = pointerState && pMsg->m_msgID == XCP_POINTERUPDATE &&
-                                 pointerState->GetPointerInputType() == pMsg->m_pointerInfo.m_pointerInputType &&
-                                 pointerState->GetLastPosition().x == pMsg->m_pointerInfo.m_pointerLocation.x &&
-                                 pointerState->GetLastPosition().y == pMsg->m_pointerInfo.m_pointerLocation.y;
-
-        if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeMouse)
-        {
-            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Mouse, keepUIAFocusState);
-        }
-        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeTouch)
-        {
-            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Touch, keepUIAFocusState);
-        }
-        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypePen)
-        {
-            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Pen, keepUIAFocusState);
-        }
-        else
-        {
-            ASSERT(FALSE);
-        }
-
-        m_inputManager.m_coreServices.GetInputServices()->SetLastInputDeviceType(pMsg->m_pointerInfo.m_pointerInputType);
     }
 
     m_fBarrelButtonPressed = pMsg->m_pointerInfo.m_bBarrelButtonPressed;
