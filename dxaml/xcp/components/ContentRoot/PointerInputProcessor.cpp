@@ -184,11 +184,13 @@ CoalescedInputEntry::CoalescedInputEntry(const InputMessage& msg)
 
 bool PointerInputProcessor::HasPendingInput() const
 {
-    return m_activeCoalescingInput.has_value() || !m_coalescedInputQueue.empty();
+    return !m_coalescedInputQueue.empty() || m_activeCoalescingInput.has_value();
 }
 
 _Check_return_ HRESULT PointerInputProcessor::EnsurePendingInputsFlushed()
 {
+    // We might arrive here through reentracy. The outer flush will
+    // completely drain the queue already. Do nothing.
     if (m_isFlushing)
     {
         return S_OK;
@@ -197,25 +199,20 @@ _Check_return_ HRESULT PointerInputProcessor::EnsurePendingInputsFlushed()
     auto flushGuard = wil::scope_exit([&] { m_isFlushing = false; });
     m_isFlushing = true;
 
-    size_t drainPasses = 0;
-    constexpr size_t maxDrainPasses = 100;
-
-    while (HasPendingInput() && drainPasses++ < maxDrainPasses)
+    while (HasPendingInput())
     {
-        if (m_activeCoalescingInput.has_value())
+        if (m_coalescedInputQueue.empty())
         {
             m_coalescedInputQueue.push_back(std::move(*m_activeCoalescingInput));
             m_activeCoalescingInput.reset();
         }
 
-        auto toFlush = std::move(m_coalescedInputQueue);
-        m_coalescedInputQueue.clear();
+        auto entry = std::move(m_coalescedInputQueue.front());
+        m_coalescedInputQueue.pop_front();
 
-        for (auto& entry : toFlush)
-        {
-            XINT32 coreHandled = FALSE;
-            IGNOREHR(ProcessPointerInputCore(&entry.m_msg, &coreHandled));
-        }
+        XINT32 coreHandled = FALSE;
+        IGNOREHR(ProcessPointerInputInner(&entry.m_msg, &coreHandled));
+        // TODO: Should we failfast if we failed to handle the event (i.e coreHandled=FALSE)?
     }
 
     return S_OK;
@@ -234,32 +231,16 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
     IFCPTR_RETURN(pMsg);
     IFCPTR_RETURN(handled);
 
+    const bool hasPending = HasPendingInput();
+
     if (IsHighPriority(pMsg))
     {
-        IFC_RETURN(EnsurePendingInputsFlushed());
-        return ProcessPointerInputCore(pMsg, handled);
-    }
-
-    const auto hadPending = HasPendingInput();
-
-    if (pMsg->m_msgID == XCP_POINTERUPDATE)
-    {
-        if (m_activeCoalescingInput.has_value())
+        // Skip the queue and directly process the event when there are no pending events.
+        if (!hasPending)
         {
-            auto& active = *m_activeCoalescingInput;
-            const auto isSameMsgKind = (active.m_msg.m_msgID == pMsg->m_msgID) && (active.m_msg.m_bIsSecondaryMessage == pMsg->m_bIsSecondaryMessage);
-            const auto isSamePointer = (active.m_msg.m_pointerInfo.m_pointerId == pMsg->m_pointerInfo.m_pointerId);
-            const auto canCoalesceWithPreviousInput = isSameMsgKind && isSamePointer;
-
-            if (!canCoalesceWithPreviousInput)
-            {
-                m_coalescedInputQueue.push_back(std::move(active));
-            }
+            return ProcessPointerInputInner(pMsg, handled);
         }
-        m_activeCoalescingInput = CoalescedInputEntry(*pMsg);
-    }
-    else // XCP_POINTERWHEELCHANGED
-    {
+
         if (m_activeCoalescingInput.has_value())
         {
             m_coalescedInputQueue.push_back(std::move(*m_activeCoalescingInput));
@@ -267,31 +248,67 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
         }
 
         m_coalescedInputQueue.push_back(CoalescedInputEntry(*pMsg));
+        IFC_RETURN(EnsurePendingInputsFlushed());
+    }
+    else
+    {
+        // We request for an additional frame in order to process/render
+        // for this coalesced event, but we only need to do this during
+        // the first coalesced event.
+        const auto requestAdditionalFrame = !hasPending;
+
+        if (pMsg->m_msgID == XCP_POINTERUPDATE)
+        {
+            if (m_activeCoalescingInput.has_value())
+            {
+                auto& active = *m_activeCoalescingInput;
+                const auto isSameMsgKind = (active.m_msg.m_msgID == pMsg->m_msgID) && (active.m_msg.m_bIsSecondaryMessage == pMsg->m_bIsSecondaryMessage);
+                const auto isSamePointer = (active.m_msg.m_pointerInfo.m_pointerId == pMsg->m_pointerInfo.m_pointerId);
+                const auto canCoalesceWithPreviousInput = isSameMsgKind && isSamePointer;
+
+                if (!canCoalesceWithPreviousInput)
+                {
+                    m_coalescedInputQueue.push_back(std::move(active));
+                }
+            }
+            m_activeCoalescingInput = CoalescedInputEntry(*pMsg);
+        }
+        else // XCP_POINTERWHEELCHANGED
+        {
+            if (m_activeCoalescingInput.has_value())
+            {
+                m_coalescedInputQueue.push_back(std::move(*m_activeCoalescingInput));
+                m_activeCoalescingInput.reset();
+            }
+
+            m_coalescedInputQueue.push_back(CoalescedInputEntry(*pMsg));
+        }
+
+        if (requestAdditionalFrame)
+        {
+            m_inputManager.m_coreServices.RequestAdditionalFrame(RequestFrameReason::InputManager);
+        }
+
+        if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeMouse)
+        {
+            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Mouse);
+        }
+        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeTouch)
+        {
+            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Touch);
+        }
+        else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypePen)
+        {
+            m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Pen);
+        }
     }
 
-    if (!hadPending)
-    {
-        m_inputManager.m_coreServices.RequestAdditionalFrame(RequestFrameReason::InputManager);
-    }
-
-    if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeMouse)
-    {
-        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Mouse);
-    }
-    else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypeTouch)
-    {
-        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Touch);
-    }
-    else if (pMsg->m_pointerInfo.m_pointerInputType == XcpPointerInputTypePen)
-    {
-        m_inputManager.SetLastInputDeviceType(DirectUI::InputDeviceType::Pen);
-    }
-
+    // Always mark the event as handled.
     *handled = TRUE;
     return S_OK;
 }
 
-_Check_return_ HRESULT PointerInputProcessor::ProcessPointerInputCore(
+_Check_return_ HRESULT PointerInputProcessor::ProcessPointerInputInner(
     _In_ InputMessage *pMsg,
     _Out_ XINT32 *handled)
 {

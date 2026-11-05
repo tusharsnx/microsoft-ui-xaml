@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -63,10 +64,6 @@ namespace ContentRootInput
         bool HasPendingInput() const;
         _Check_return_ HRESULT EnsurePendingInputsFlushed();
         static bool IsHighPriority(_In_ const InputMessage* pMsg);
-
-        _Check_return_ HRESULT ProcessPointerInputCore(
-            _In_ InputMessage *pMsg,
-            _Out_ XINT32 *handled);
 
         InputMessage* GetCurrentMsgForDirectManipulationProcessing() const;
         void SetCurrentMsgForDirectManipulationProcessing(_In_opt_ InputMessage* inputMessage);
@@ -139,6 +136,8 @@ namespace ContentRootInput
 
         _Check_return_ HRESULT ReleasePointerCaptureById(_In_ XINT32 releasePointerId, _In_ ixp::IPointerPoint* pointerPoint);
 
+        _Check_return_ HRESULT ProcessPointerInputInner(_In_ InputMessage *pMsg, _Out_ XINT32 *handled);
+
         CInputManager& m_inputManager;
 
         bool m_fBarrelButtonPressed = false;
@@ -167,7 +166,7 @@ namespace ContentRootInput
         xref_ptr<CPointer> m_cachedPointer;
 
         std::optional<CoalescedInputEntry> m_activeCoalescingInput;
-        std::vector<CoalescedInputEntry> m_coalescedInputQueue;
+        std::deque<CoalescedInputEntry> m_coalescedInputQueue;
         bool m_isFlushing = false;
 
     };
