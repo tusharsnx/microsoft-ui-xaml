@@ -466,7 +466,7 @@ HRESULT CCoreServices::ProcessInput(
 }
 
 _Check_return_
-HRESULT CCoreServices::FlushAllPendingInputs()
+HRESULT CCoreServices::DrainPendingInputsQueue()
 {
     ASSERT(FALSE);
     RRETURN(E_NOTIMPL);

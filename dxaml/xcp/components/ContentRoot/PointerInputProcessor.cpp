@@ -187,7 +187,7 @@ bool PointerInputProcessor::HasPendingInput() const
     return !m_coalescedInputQueue.empty() || m_activeCoalescingInput.has_value();
 }
 
-_Check_return_ HRESULT PointerInputProcessor::EnsurePendingInputsFlushed()
+_Check_return_ HRESULT PointerInputProcessor::DrainPendingInputsQueue()
 {
     // We might arrive here through reentracy. The outer flush will
     // completely drain the queue already. Do nothing.
@@ -292,7 +292,7 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
         }
 
         m_coalescedInputQueue.push_back(CoalescedInputEntry(*pMsg));
-        IFC_RETURN(EnsurePendingInputsFlushed());
+        IFC_RETURN(DrainPendingInputsQueue());
     }
     else
     {

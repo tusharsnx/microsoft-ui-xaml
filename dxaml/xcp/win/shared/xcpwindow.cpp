@@ -599,7 +599,7 @@ void CXcpDispatcher::ProcessMessage(UINT msg, WPARAM wParam, LPARAM lParam)
             // Flush pending inputs before we go for Layout.
             if (m_pBH && m_pBH->GetContextInterface())
             {
-                IGNOREHR(m_pBH->GetContextInterface()->FlushAllPendingInputs());
+                IGNOREHR(m_pBH->GetContextInterface()->DrainPendingInputsQueue());
             }
             [[fallthrough]];
         }

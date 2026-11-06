@@ -35,7 +35,7 @@ public:
     ContentRootInput::DragDropProcessor& GetDragDropProcessor() { return m_dragDropProcessor; }
 
     bool HasPendingInput() const { return m_pointerInputProcessor.HasPendingInput(); }
-    _Check_return_ HRESULT EnsurePendingInputsFlushed() { return m_pointerInputProcessor.EnsurePendingInputsFlushed(); }
+    _Check_return_ HRESULT DrainPendingInputsQueue() { return m_pointerInputProcessor.DrainPendingInputsQueue(); }
 
     _Check_return_ HRESULT ProcessKeyboardInput(
         _In_ const wsy::VirtualKey virtualKey,

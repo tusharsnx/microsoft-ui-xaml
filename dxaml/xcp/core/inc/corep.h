@@ -1057,7 +1057,7 @@ public:
          _In_opt_ CContentRoot* contentRoot,
          _Out_ XINT32 *fHandled);
 
-    _Check_return_ HRESULT FlushAllPendingInputs();
+    _Check_return_ HRESULT DrainPendingInputsQueue();
 
     void RequestReplayPreviousPointerUpdate();
     void ReplayPreviousPointerUpdate();

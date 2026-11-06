@@ -62,7 +62,7 @@ namespace ContentRootInput
             _Out_ XINT32 *handled);
 
         bool HasPendingInput() const;
-        _Check_return_ HRESULT EnsurePendingInputsFlushed();
+        _Check_return_ HRESULT DrainPendingInputsQueue();
         static bool IsHighPriority(_In_ const InputMessage* pMsg);
 
         InputMessage* GetCurrentMsgForDirectManipulationProcessing() const;

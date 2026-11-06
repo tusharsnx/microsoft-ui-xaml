@@ -1399,20 +1399,20 @@ CCoreServices::ProcessInput(
 
 //------------------------------------------------------------------------
 //
-//  Method: FlushAllPendingInputs
+//  Method: DrainPendingInputsQueue
 //
 //  Synopsis:
 //      Flushes pending coalesced input events across all content roots.
 //
 //------------------------------------------------------------------------
 _Check_return_ HRESULT
-CCoreServices::FlushAllPendingInputs()
+CCoreServices::DrainPendingInputsQueue()
 {
     for (const auto& contentRoot : m_contentRootCoordinator.GetContentRoots())
     {
         if (contentRoot)
         {
-            IFC_RETURN(contentRoot->GetInputManager().EnsurePendingInputsFlushed());
+            IFC_RETURN(contentRoot->GetInputManager().DrainPendingInputsQueue());
         }
     }
     return S_OK;
