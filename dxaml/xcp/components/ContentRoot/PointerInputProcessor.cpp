@@ -231,12 +231,9 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
     IFCPTR_RETURN(pMsg);
     IFCPTR_RETURN(handled);
 
-    const bool hasPending = HasPendingInput();
-
-    // Update the last input device type.
-    // This makes sure that the future events are correctly handled
-    // in the context of the current event's device type.
-    {
+    // Set the last input device type. If this is a replay message, don't set the last input
+    // device type since that might tromp on the value for keyboard or gamepad.
+    if (!pMsg->IsReplayedMessage()) {
         std::shared_ptr<CPointerState> pointerState;
 
         const auto pointerId = pMsg->m_pointerInfo.m_pointerId;
@@ -277,6 +274,8 @@ _Check_return_ HRESULT PointerInputProcessor::ProcessPointerInput(
 
         m_inputManager.m_coreServices.GetInputServices()->SetLastInputDeviceType(pMsg->m_pointerInfo.m_pointerInputType);
     }
+
+    const bool hasPending = HasPendingInput();
 
     if (IsHighPriority(pMsg))
     {
