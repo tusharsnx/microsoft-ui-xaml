@@ -1,0 +1,45 @@
+<UserControl
+    x:Class="InputTimingSample.LineChartControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="ChartRoot" SizeChanged="OnChartSizeChanged">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Chart Title & Legend -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock x:Name="ChartTitleBlock" Text="Latency Over Time (ms)" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+            
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="16">
+                <!-- Dispatch Series Legend -->
+                <CheckBox x:Name="DispatchToggle" Content="Dispatch Delay" IsChecked="True" Checked="OnSeriesToggleChanged" Unchecked="OnSeriesToggleChanged"
+                          Foreground="#3B82F6" FontSize="12" />
+                <!-- TextBox Processing Legend -->
+                <CheckBox x:Name="ProcessingToggle" Content="TextBox Processing" IsChecked="True" Checked="OnSeriesToggleChanged" Unchecked="OnSeriesToggleChanged"
+                          Foreground="#10B981" FontSize="12" />
+                <!-- Rendered Legend -->
+                <CheckBox x:Name="RenderToggle" Content="Frame Rendered" IsChecked="True" Checked="OnSeriesToggleChanged" Unchecked="OnSeriesToggleChanged"
+                          Foreground="#F59E0B" FontSize="12" />
+                <!-- Total Latency Legend -->
+                <CheckBox x:Name="TotalToggle" Content="Total Latency" IsChecked="True" Checked="OnSeriesToggleChanged" Unchecked="OnSeriesToggleChanged"
+                          Foreground="#8B5CF6" FontSize="12" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Chart Plot Area -->
+        <Border Grid.Row="1" Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6">
+            <Canvas x:Name="PlotCanvas" Margin="40,10,20,25" Background="Transparent" PointerMoved="OnPlotPointerMoved" PointerExited="OnPlotPointerExited">
+                <!-- Gridlines and axis labels drawn in code -->
+            </Canvas>
+        </Border>
+
+        <!-- Hover Info Bar -->
+        <TextBlock x:Name="HoverInfoText" Grid.Row="2" Margin="0,6,0,0" Text="Hover over the chart to inspect individual event timings"
+                   FontSize="12" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+    </Grid>
+</UserControl>

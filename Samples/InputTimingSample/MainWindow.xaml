@@ -1,0 +1,246 @@
+<Window
+    x:Class="InputTimingSample.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:InputTimingSample"
+    Title="WinUI 3 Input &amp; TextBox Timing Verification Harness (Recording Profiler)">
+
+    <Grid Padding="24" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="4">
+            <TextBlock Text="Input &amp; TextBox Timing Verification Harness" FontSize="24" FontWeight="Bold" />
+            <TextBlock Text="Record user interaction sessions with zero profiling overhead, then analyze the entirety of timings, render lifecycle events, compositor frames, and latency metrics."
+                       Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+        </StackPanel>
+
+        <!-- Interactive Test Area -->
+        <Border Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+            <StackPanel Spacing="12">
+                <!-- Top Row: Recording Controls & Options -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                        <Button x:Name="RecordToggleButton" Click="OnRecordToggleClicked" Height="36" Padding="16,4"
+                                Background="#10B981" Foreground="White" FontWeight="Bold" FontSize="13">
+                            <TextBlock x:Name="RecordToggleText" Text="▶ Start Recording" />
+                        </Button>
+
+                        <Border x:Name="RecordingStatusBadge" Background="{ThemeResource SubtleFillColorSecondaryBrush}" 
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4" Padding="10,6">
+                            <TextBlock x:Name="RecordingStatusTextBlock" Text="Status: Idle (Click '▶ Start Recording' to begin)" 
+                                       FontSize="12" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" VerticalAlignment="Center" />
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <CheckBox x:Name="TrackMovesCheckBox" Content="Track PointerMoves" 
+                                  IsChecked="True" Checked="OnTrackMovesToggled" Unchecked="OnTrackMovesToggled"
+                                  VerticalAlignment="Center" FontSize="12" />
+                        <Button x:Name="ClearButton" Content="Clear Recording" Click="OnClearClicked" VerticalAlignment="Center" FontSize="12" />
+                        <Button x:Name="CopyButton" Content="Copy Recording Log" Click="OnCopyClicked" VerticalAlignment="Center" FontSize="12" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Target TextBox for Interaction -->
+                <local:InstrumentedTextBox x:Name="TestTextBox"
+                    PlaceholderText="Click '▶ Start Recording', then click, type or interact here..."
+                    FontSize="15" Height="42" VerticalAlignment="Center" />
+
+                <!-- Explanatory note -->
+                <TextBlock Text="Recording mode pauses all UI drawing during interaction to eliminate profiler overhead and lag. When you click '⏹ Stop Recording', the entirety of the recorded session is displayed at once below with detailed timings for all events."
+                           FontSize="11" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+            </StackPanel>
+        </Border>
+
+        <!-- Metrics Dashboard (Session Summary Metrics) -->
+        <Grid Grid.Row="2" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Card 1: Dispatch Delay -->
+            <Border Grid.Column="0" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Dispatch Delay (T1 -> T2)" FontSize="12" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                    <TextBlock x:Name="DispatchDelaySummary" Text="-- ms" FontSize="20" FontWeight="Bold" Foreground="#3B82F6" />
+                    <TextBlock x:Name="DispatchDelaySubtitle" Text="CoreMessaging -> Control" FontSize="11" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                </StackPanel>
+            </Border>
+
+            <!-- Card 2: TextBox Processing -->
+            <Border Grid.Column="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="TextBox Processing (T2 -> T3)" FontSize="12" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                    <TextBlock x:Name="TextBoxProcessingSummary" Text="-- ms" FontSize="20" FontWeight="Bold" Foreground="#10B981" />
+                    <TextBlock x:Name="TextBoxProcessingSubtitle" Text="RichEdit / caret / selection" FontSize="11" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                </StackPanel>
+            </Border>
+
+            <!-- Card 3: Render Delay -->
+            <Border Grid.Column="2" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Frame Rendered (T3 -> T4)" FontSize="12" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                    <TextBlock x:Name="RenderDelaySummary" Text="-- ms" FontSize="20" FontWeight="Bold" Foreground="#F59E0B" />
+                    <TextBlock x:Name="RenderDelaySubtitle" Text="Layout, draw &amp; frame commit" FontSize="11" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                </StackPanel>
+            </Border>
+
+            <!-- Card 4: Total Latency -->
+            <Border Grid.Column="3" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Total Latency (T1 -> T4)" FontSize="12" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                    <TextBlock x:Name="TotalLatencySummary" Text="-- ms" FontSize="20" FontWeight="Bold" Foreground="#8B5CF6" />
+                    <TextBlock x:Name="TotalLatencySubtitle" Text="Input Arrival -> Frame Rendered" FontSize="11" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Visualization Area: Tabs for Unified Timeline, Line Graph & Raw Tables -->
+        <Border Grid.Row="3" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+            <Pivot x:Name="ViewPivot" SelectionChanged="OnPivotSelectionChanged">
+                <!-- Tab 1: Unified Input, Render & Frame Timeline -->
+                <PivotItem Header="Unified Event &amp; Render Timeline">
+                    <Grid Margin="0,12,0,0">
+                        <local:TimelineControl x:Name="TimingTimeline" />
+                    </Grid>
+                </PivotItem>
+
+                <!-- Tab 2: Latency Line Graph -->
+                <PivotItem Header="Latency Line Graph (Full Recording)">
+                    <Grid Margin="0,12,0,0">
+                        <local:LineChartControl x:Name="TimingChart" />
+                    </Grid>
+                </PivotItem>
+
+                <!-- Tab 3: Unified Event Log Table -->
+                <PivotItem Header="Unified Event Log Table">
+                    <Grid RowSpacing="8" Margin="0,12,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Filter & Search Toolbar -->
+                        <Grid Grid.Row="0" ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="260" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Category Filter Dropdown -->
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="Category:" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                                <ComboBox x:Name="TableCategoryFilter" SelectedIndex="0" SelectionChanged="OnTableFilterChanged" Width="200">
+                                    <ComboBoxItem Content="All Categories" />
+                                    <ComboBoxItem Content="Inputs (Pointer, Key, Char)" />
+                                    <ComboBoxItem Content="Render Lifecycle" />
+                                    <ComboBoxItem Content="Compositor Frames" />
+                                    <ComboBoxItem Content="Layout Passes" />
+                                    <ComboBoxItem Content="Viewport &amp; Scroll" />
+                                    <ComboBoxItem Content="Content &amp; Selection" />
+                                    <ComboBoxItem Content="Visual State" />
+                                </ComboBox>
+                            </StackPanel>
+
+                            <!-- Toggle PointerMoves -->
+                            <CheckBox x:Name="TableShowMovesCheckBox" Grid.Column="1" Content="Show PointerMoves" IsChecked="True" 
+                                      Checked="OnTableFilterChanged" Unchecked="OnTableFilterChanged" VerticalAlignment="Center" />
+
+                            <!-- Search Filter -->
+                            <TextBox x:Name="TableSearchBox" Grid.Column="2" PlaceholderText="Search events or details..." 
+                                     TextChanged="OnTableSearchTextChanged" VerticalAlignment="Center" />
+
+                            <!-- Record Count Text -->
+                            <TextBlock x:Name="TableRecordCountTextBlock" Grid.Column="3" Text="0 events recorded" 
+                                       HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="12" 
+                                       Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                        </Grid>
+
+                        <!-- Unified Table Header -->
+                        <Grid Grid.Row="1" Padding="8,6" Background="{ThemeResource SubtleFillColorSecondaryBrush}" CornerRadius="4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="50" />
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="75" />
+                                <ColumnDefinition Width="105" />
+                                <ColumnDefinition Width="160" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="80" />
+                                <ColumnDefinition Width="80" />
+                                <ColumnDefinition Width="80" />
+                                <ColumnDefinition Width="90" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="#" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="1" Text="Time" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="2" Text="Elapsed" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="3" Text="Category" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="4" Text="Event Name" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="5" Text="Details" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="6" Text="Dispatch" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="7" Text="Proc (T2-3)" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="8" Text="Render (T3-4)" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Grid.Column="9" Text="Total / Frame" FontWeight="SemiBold" FontSize="12" />
+                        </Grid>
+
+                        <!-- Unified Table Items -->
+                        <ListView x:Name="UnifiedEventsListView" Grid.Row="2" SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="local:UnifiedTimingRecord">
+                                    <Grid Padding="8,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="50" />
+                                            <ColumnDefinition Width="90" />
+                                            <ColumnDefinition Width="75" />
+                                            <ColumnDefinition Width="105" />
+                                            <ColumnDefinition Width="160" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="80" />
+                                            <ColumnDefinition Width="80" />
+                                            <ColumnDefinition Width="80" />
+                                            <ColumnDefinition Width="90" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{x:Bind Id}" FontSize="12" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind FormattedTime}" FontSize="11" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="2" Text="{x:Bind FormattedElapsed}" FontSize="11" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" VerticalAlignment="Center" />
+                                        <Border Grid.Column="3" Background="{x:Bind CategoryBackgroundBrush}" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Category}" FontSize="11" FontWeight="SemiBold" Foreground="{x:Bind CategoryBrush}" />
+                                        </Border>
+                                        <TextBlock Grid.Column="4" Text="{x:Bind EventType}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="5" Text="{x:Bind Details}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,8,0" />
+                                        <TextBlock Grid.Column="6" Text="{x:Bind DispatchDelay}" FontSize="12" Foreground="#3B82F6" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="7" Text="{x:Bind ProcessingDelay}" FontSize="12" Foreground="#10B981" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="8" Text="{x:Bind RenderDelay}" FontSize="12" Foreground="#F59E0B" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="9" Text="{x:Bind TotalLatency}" FontSize="12" FontWeight="Bold" Foreground="#8B5CF6" VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </Grid>
+                </PivotItem>
+            </Pivot>
+        </Border>
+    </Grid>
+</Window>
