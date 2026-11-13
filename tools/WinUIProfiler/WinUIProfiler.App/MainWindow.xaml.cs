@@ -3,11 +3,14 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using WinUIProfiler.App.Services;
 using WinUIProfiler.App.ViewModels;
@@ -47,6 +50,10 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<Guid, SnapshotViewerWindow> snapshotWindows = [];
     private readonly Dictionary<(Guid Before, Guid After), SnapshotDiffWindow> snapshotDiffWindows = [];
     public ObservableCollection<SnapshotHistoryEntry> Snapshots { get; } = [];
+    private bool isDraggingSplitter;
+    private double splitterDragStartY;
+    private double initialTopPanelHeight;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -60,6 +67,7 @@ public sealed partial class MainWindow : Window
         FramesPanel.Owner = AppWindow.Id;
         ObjectsPanel.Owner = AppWindow.Id;
         FramesPanel.Source = session;
+        TimelinePanel.Source = session;
         ObjectsPanel.Source = session;
         LaunchPanel.Source = session;
         FramesPanel.ObjectRequested += (_, mention) =>
@@ -67,8 +75,126 @@ public sealed partial class MainWindow : Window
             Tabs.SelectedItem = ObjectsTab;
             ObjectsPanel.ShowObject(mention.ObjectId);
         };
+        TimelinePanel.ObjectRequested += (_, mention) =>
+        {
+            Tabs.SelectedItem = ObjectsTab;
+            ObjectsPanel.ShowObject(mention.ObjectId);
+        };
         UpdateTargetSummary();
         Refresh();
+
+        try
+        {
+            var prop = typeof(UIElement).GetProperty("ProtectedCursor", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            prop?.SetValue(PanelSplitter, InputSystemCursor.Create(InputSystemCursorShape.SizeNorthSouth));
+        }
+        catch
+        {
+        }
+    }
+
+    private void Tabs_SelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (ReferenceEquals(Tabs.SelectedItem, TimelineTab))
+        {
+            TimelinePanel.Focus(FocusState.Programmatic);
+        }
+    }
+
+    private void PanelSplitter_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        SplitterBar.Height = 4;
+        if (Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out var accent) && accent is Brush brush)
+        {
+            SplitterBar.Background = brush;
+        }
+    }
+
+    private void PanelSplitter_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (!isDraggingSplitter)
+        {
+            SplitterBar.Height = 2;
+            if (Application.Current.Resources.TryGetValue("DividerStrokeColorDefaultBrush", out var divider) && divider is Brush brush)
+            {
+                SplitterBar.Background = brush;
+            }
+        }
+    }
+
+    private void PanelSplitter_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(Root);
+        if (point.Properties.IsLeftButtonPressed)
+        {
+            isDraggingSplitter = true;
+            splitterDragStartY = point.Position.Y;
+            initialTopPanelHeight = TopPanelScrollViewer.ActualHeight;
+            PanelSplitter.CapturePointer(e.Pointer);
+            SplitterBar.Height = 4;
+            if (Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out var accent) && accent is Brush brush)
+            {
+                SplitterBar.Background = brush;
+            }
+            e.Handled = true;
+        }
+    }
+
+    private void PanelSplitter_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!isDraggingSplitter)
+        {
+            return;
+        }
+
+        var currentY = e.GetCurrentPoint(Root).Position.Y;
+        var deltaY = currentY - splitterDragStartY;
+        var newTopHeight = initialTopPanelHeight + deltaY;
+
+        const double minTopHeight = 60.0;
+        const double minBottomHeight = 150.0;
+
+        double totalAvailable = Root.ActualHeight - TitlePanel.ActualHeight - PanelSplitter.ActualHeight - Root.RowSpacing * 3;
+        double maxTopHeight = Math.Max(minTopHeight, totalAvailable - minBottomHeight);
+
+        newTopHeight = Math.Clamp(newTopHeight, minTopHeight, maxTopHeight);
+
+        TopRow.Height = new GridLength(newTopHeight, GridUnitType.Pixel);
+        BottomRow.Height = new GridLength(1, GridUnitType.Star);
+
+        e.Handled = true;
+    }
+
+    private void PanelSplitter_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (isDraggingSplitter)
+        {
+            isDraggingSplitter = false;
+            PanelSplitter.ReleasePointerCapture(e.Pointer);
+            SplitterBar.Height = 2;
+            if (Application.Current.Resources.TryGetValue("DividerStrokeColorDefaultBrush", out var divider) && divider is Brush brush)
+            {
+                SplitterBar.Background = brush;
+            }
+            e.Handled = true;
+        }
+    }
+
+    private void PanelSplitter_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        isDraggingSplitter = false;
+        SplitterBar.Height = 2;
+        if (Application.Current.Resources.TryGetValue("DividerStrokeColorDefaultBrush", out var divider) && divider is Brush brush)
+        {
+            SplitterBar.Background = brush;
+        }
+    }
+
+    private void PanelSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        TopRow.Height = GridLength.Auto;
+        BottomRow.Height = new GridLength(1, GridUnitType.Star);
+        e.Handled = true;
     }
 
     // Resize takes physical pixels, so at the display's scaling the window is 1280 x 1050, within the work area.

@@ -455,6 +455,58 @@ public static class SessionFile
     public static long CountSpanEvents(string path, int threadId, long firstSeq, long lastSeq, string? bucket, string? filter) =>
         CountScopedEvents(path, SpanScope(threadId, firstSeq, lastSeq), bucket, filter);
 
+    public static (ProfilerEvent Event, string Bucket, IReadOnlyList<ObjectMention> Mentions)? ReadSingleEvent(string path, long seq)
+    {
+        (ProfilerEvent Event, string Bucket, IReadOnlyList<ObjectMention> Mentions)? result = null;
+        ReadScopedEvents(path, new("EventDetails d", "d.Seq = $seq", [("$seq", seq)]), null, null, 0, 1,
+            (ev, bucket, mentions) => result = (ev, bucket, mentions), default);
+        return result;
+    }
+
+    public static IReadOnlyList<WinUIProfiler.Engine.Timeline.TimelineRawEvent> ReadTimelineRawEvents(string path, CancellationToken cancellationToken = default)
+    {
+        using var connection = Open(path);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var (info, frequency, startQpc) = ReadSession(connection, transaction);
+        var start = startQpc.GetValueOrDefault();
+        using var command = Command(connection, transaction, """
+            SELECT e.Seq, e.Qpc, e.ThreadId, t.Name, t.Provider, t.Opcode,
+                   COALESCE(r.Bucket,
+                       CASE
+                           WHEN t.Provider = 'Xaml' THEN 'Xaml'
+                           WHEN t.Provider = 'DirectComposition' THEN 'Composition'
+                           ELSE 'Other'
+                       END) AS Bucket
+            FROM Events e
+            JOIN EventTypes t ON t.TypeId = e.TypeId
+            LEFT JOIN FrameEvents r ON r.Seq = e.Seq
+            ORDER BY e.Seq
+            """);
+        using var reader = command.ExecuteReader();
+        var list = new List<WinUIProfiler.Engine.Timeline.TimelineRawEvent>();
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var qpc = reader.GetInt64(1);
+            var ms = (qpc - start) * 1000.0 / frequency;
+            var providerStr = reader.GetString(4);
+            if (!Enum.TryParse<XamlProvider>(providerStr, true, out var provider))
+            {
+                provider = XamlProvider.Xaml;
+            }
+            list.Add(new(
+                reader.GetInt64(0),
+                ms,
+                reader.GetInt32(2),
+                reader.GetString(3),
+                provider,
+                reader.GetInt32(5),
+                reader.GetString(6)
+            ));
+        }
+        return list;
+    }
+
     // Where a query's events come from and which of them it keeps. Every scope names a view with EventDetails' columns d.
     private sealed record EventScope(string From, string Where, (string Name, object? Value)[] Parameters);
 

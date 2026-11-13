@@ -11,6 +11,7 @@ public partial class App : Application
         {
             System.Diagnostics.Trace.TraceError(error.Exception.ToString());
             Console.Error.WriteLine(error.Message + Environment.NewLine + error.Exception);
+            error.Handled = true;
         };
         if (Environment.GetEnvironmentVariable("WINUI_PROFILER_TRACE_XAML") == "1")
         {

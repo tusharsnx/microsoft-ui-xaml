@@ -420,4 +420,10 @@
   <data name="SnapshotVisualNotFoundFormat" xml:space="preserve"><value>{0} isn't in this session file. The recording may have started after it was inserted, or its events were trimmed.</value></data>
   <data name="SnapshotXamlTree.AutomationProperties.HelpText" xml:space="preserve"><value>Double-click a node to see its element's history in the Objects tab.</value></data>
   <data name="SnapshotCompositionTree.AutomationProperties.HelpText" xml:space="preserve"><value>Double-click a node to see its visual's history in the Objects tab.</value></data>
+  <data name="TimelineTab.Header" xml:space="preserve"><value>Timeline</value></data>
+  <data name="TimelineFitAll.Content" xml:space="preserve"><value>Fit all</value></data>
+  <data name="TimelineClearSelection.Content" xml:space="preserve"><value>Clear selection</value></data>
+  <data name="TimelineAutoFitTracks.Content" xml:space="preserve"><value>Auto-fit heights</value></data>
+  <data name="TimelineEmptyNotice" xml:space="preserve"><value>No session file or trace loaded. Open a trace or connect to a target to view its timeline.</value></data>
+  <data name="TimelineReadingNotice" xml:space="preserve"><value>Loading timeline events from session file...</value></data>
 </root>
