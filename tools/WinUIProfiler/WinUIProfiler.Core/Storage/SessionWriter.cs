@@ -64,6 +64,7 @@ public sealed class SessionWriter : IEventProcessor, IDisposable
     private readonly SqliteCommand insertType;
     private readonly ObjectIndex objects;
     private readonly FrameIndex frames;
+    private readonly ThreadIndex threads;
     private readonly int processId;
     // Event types written so far, by provider (and marker provider), kind (TraceLogging or manifest), name, opcode and
     // whether the launcher wrote them. Usually one layout each; a field that is sometimes null gives a second.
@@ -113,6 +114,7 @@ public sealed class SessionWriter : IEventProcessor, IDisposable
         json = new(payload, new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         objects = new(connection);
         frames = new(connection);
+        threads = new(connection);
         writer = new(Run) { IsBackground = true, Name = "WinUIProfiler session writer" };
         writer.Start();
     }
@@ -302,6 +304,7 @@ public sealed class SessionWriter : IEventProcessor, IDisposable
                 {
                     objects.Add(sequence, typeId, profilerEvent, transaction);
                     frames.Add(sequence, typeId, profilerEvent, transaction);
+                    threads.Add(profilerEvent, transaction);
                 }
             }
 
@@ -497,6 +500,7 @@ public sealed class SessionWriter : IEventProcessor, IDisposable
             json.Dispose();
             objects.Dispose();
             frames.Dispose();
+            threads.Dispose();
             insertEvent.Dispose();
             insertType.Dispose();
             connection.Dispose();

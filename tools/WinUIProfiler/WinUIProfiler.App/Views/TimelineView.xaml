@@ -22,6 +22,9 @@
                     <SolidColorBrush x:Key="SelectionWindowFill" Color="#280078D4" />
                     <SolidColorBrush x:Key="SelectionHandleBrush" Color="#0078D4" />
                     <SolidColorBrush x:Key="DimCoverBrush" Color="#60000000" />
+                    <SolidColorBrush x:Key="FrameRequestMarkerBrush" Color="#80FFFFFF" />
+                    <SolidColorBrush x:Key="FrameRequestDelayedMarkerBrush" Color="#FFFF4343" />
+                    <SolidColorBrush x:Key="FrameCommitMarkerBrush" Color="#27C380" />
                     <AcrylicBrush x:Key="HoverPopupBackground" TintColor="#202020" TintOpacity="0.8" FallbackColor="#202020" />
                     <SolidColorBrush x:Key="HoverPopupBorder" Color="#4A4A4A" />
                     <AcrylicBrush x:Key="SidePanelBackground" TintColor="#1E1E1E" TintOpacity="0.8" FallbackColor="#1E1E1E" />
@@ -41,6 +44,9 @@
                     <SolidColorBrush x:Key="SelectionWindowFill" Color="#200078D4" />
                     <SolidColorBrush x:Key="SelectionHandleBrush" Color="#005A9E" />
                     <SolidColorBrush x:Key="DimCoverBrush" Color="#35000000" />
+                    <SolidColorBrush x:Key="FrameRequestMarkerBrush" Color="#50000000" />
+                    <SolidColorBrush x:Key="FrameRequestDelayedMarkerBrush" Color="#FFD13438" />
+                    <SolidColorBrush x:Key="FrameCommitMarkerBrush" Color="#107C41" />
                     <AcrylicBrush x:Key="HoverPopupBackground" TintColor="#F9F9F9" TintOpacity="0.8" FallbackColor="#F9F9F9" />
                     <SolidColorBrush x:Key="HoverPopupBorder" Color="#D0D0D0" />
                     <AcrylicBrush x:Key="SidePanelBackground" TintColor="#F8F8F8" TintOpacity="0.8" FallbackColor="#F8F8F8" />
@@ -133,6 +139,21 @@
                             <Rectangle Width="10" Height="10" Fill="{ThemeResource OtherColorBrush}" RadiusX="2" RadiusY="2" />
                             <TextBlock Text="Other" Style="{ThemeResource CaptionTextBlockStyle}" />
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                    ToolTipService.ToolTip="Frame request hint (RequestFrameReason)">
+                            <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameRequestMarkerBrush}" RadiusX="1" RadiusY="1" Opacity="0.5" />
+                            <TextBlock Text="Frame Request" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                    ToolTipService.ToolTip="Delayed frame request (&gt; 16.66ms or unfulfilled)">
+                            <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameRequestDelayedMarkerBrush}" RadiusX="1" RadiusY="1" />
+                            <TextBlock Text="Delayed Request (&gt;16.66ms)" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                    ToolTipService.ToolTip="Frame commit (CommitMainDevice)">
+                            <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameCommitMarkerBrush}" RadiusX="1" RadiusY="1" />
+                            <TextBlock Text="Frame Commit" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </StackPanel>
                     </StackPanel>
 
                     <Button x:Name="ClearSelectionButton" x:Uid="TimelineClearSelection" Grid.Column="2"
@@ -151,6 +172,13 @@
                       PointerWheelChanged="Overview_PointerWheelChanged"
                       PointerExited="Overview_PointerExited"
                       DoubleTapped="Overview_DoubleTapped">
+                    <!-- Frame Markers (Requests and Commits) -->
+                    <Canvas x:Name="OverviewMarkersCanvas" IsHitTestVisible="False">
+                        <Path x:Name="OverviewFrameRequestsPath" Stroke="{ThemeResource FrameRequestMarkerBrush}" StrokeThickness="1" Opacity="0.45" />
+                        <Path x:Name="OverviewFrameRequestsDelayedPath" Stroke="{ThemeResource FrameRequestDelayedMarkerBrush}" StrokeThickness="1.5" />
+                        <Path x:Name="OverviewFrameCommitsPath" Stroke="{ThemeResource FrameCommitMarkerBrush}" StrokeThickness="1.5" />
+                    </Canvas>
+
                     <!-- Graph Paths -->
                     <Canvas x:Name="OverviewPlotCanvas" IsHitTestVisible="False">
                         <Path x:Name="OverviewXamlPath" Stroke="{ThemeResource XamlColorBrush}" StrokeThickness="1.5" />
@@ -199,21 +227,22 @@
                             ManipulationMode="System,TranslateX,TranslateInertia"
                             ManipulationDelta="Tracks_ManipulationDelta"
                             PointerWheelChanged="Tracks_PointerWheelChanged">
-                    <!-- Track 0: Xaml -->
-                    <Grid x:Name="XamlTrackContainer">
+                    <!-- Track 0: Frames (Requests & Commits) -->
+                    <Grid x:Name="FramesTrackContainer">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,2">
-                            <Rectangle Width="4" Height="14" Fill="{ThemeResource XamlColorBrush}" RadiusX="2" RadiusY="2" />
-                            <TextBlock Text="Xaml" FontWeight="SemiBold" FontSize="12" />
-                            <TextBlock x:Name="XamlCountText" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,2" VerticalAlignment="Center">
+                            <Rectangle Width="4" Height="14" Fill="{ThemeResource FrameCommitMarkerBrush}" RadiusX="2" RadiusY="2" />
+                            <TextBlock Text="Frames (Requests &amp; Commits)" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock x:Name="FramesCountText" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         </StackPanel>
-                        <Border Grid.Row="1" x:Name="XamlTrackBorder" Height="90"
+                        <Border Grid.Row="1" x:Name="FramesTrackBorder" Height="36" MinHeight="36" MaxHeight="36"
                                 Background="{ThemeResource TrackBackgroundBrush}"
                                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
-                            <Canvas x:Name="XamlCanvas"
+                            <Canvas x:Name="FramesCanvas"
+                                    Height="34"
                                     Background="Transparent"
                                     ManipulationMode="System,TranslateX,TranslateInertia"
                                     ManipulationDelta="Tracks_ManipulationDelta"
@@ -227,61 +256,8 @@
                         </Border>
                     </Grid>
 
-                    <!-- Track 1: Composition -->
-                    <Grid x:Name="CompositionTrackContainer">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,2">
-                            <Rectangle Width="4" Height="14" Fill="{ThemeResource CompositionColorBrush}" RadiusX="2" RadiusY="2" />
-                            <TextBlock Text="Composition" FontWeight="SemiBold" FontSize="12" />
-                            <TextBlock x:Name="CompCountText" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </StackPanel>
-                        <Border Grid.Row="1" x:Name="CompTrackBorder" Height="90"
-                                Background="{ThemeResource TrackBackgroundBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
-                            <Canvas x:Name="CompositionCanvas"
-                                    Background="Transparent"
-                                    ManipulationMode="System,TranslateX,TranslateInertia"
-                                    ManipulationDelta="Tracks_ManipulationDelta"
-                                    PointerWheelChanged="Tracks_PointerWheelChanged"
-                                    SizeChanged="TrackCanvas_SizeChanged"
-                                    PointerPressed="Track_PointerPressed"
-                                    PointerMoved="Track_PointerMoved"
-                                    PointerReleased="Track_PointerReleased"
-                                    PointerCaptureLost="Track_PointerCaptureLost"
-                                    PointerExited="Track_PointerExited" />
-                        </Border>
-                    </Grid>
-
-                    <!-- Track 2: Other -->
-                    <Grid x:Name="OtherTrackContainer">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,2">
-                            <Rectangle Width="4" Height="14" Fill="{ThemeResource OtherColorBrush}" RadiusX="2" RadiusY="2" />
-                            <TextBlock Text="Other" FontWeight="SemiBold" FontSize="12" />
-                            <TextBlock x:Name="OtherCountText" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </StackPanel>
-                        <Border Grid.Row="1" x:Name="OtherTrackBorder" Height="90"
-                                Background="{ThemeResource TrackBackgroundBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
-                            <Canvas x:Name="OtherCanvas"
-                                    Background="Transparent"
-                                    ManipulationMode="System,TranslateX,TranslateInertia"
-                                    ManipulationDelta="Tracks_ManipulationDelta"
-                                    PointerWheelChanged="Tracks_PointerWheelChanged"
-                                    SizeChanged="TrackCanvas_SizeChanged"
-                                    PointerPressed="Track_PointerPressed"
-                                    PointerMoved="Track_PointerMoved"
-                                    PointerReleased="Track_PointerReleased"
-                                    PointerCaptureLost="Track_PointerCaptureLost"
-                                    PointerExited="Track_PointerExited" />
-                        </Border>
-                    </Grid>
+                    <!-- Dynamic Thread Tracks -->
+                    <StackPanel x:Name="ThreadTracksPanel" Spacing="6" />
                 </StackPanel>
             </ScrollViewer>
 
@@ -289,8 +265,7 @@
             <Canvas x:Name="HoverOverlayCanvas" IsHitTestVisible="False">
                 <Border x:Name="HoverHighlight"
                         BorderBrush="{ThemeResource SystemFillColorAttentionBrush}"
-                        BorderThickness="1.5"
-                        CornerRadius="3"
+                        BorderThickness="1"
                         Visibility="Collapsed"
                         IsHitTestVisible="False" />
 

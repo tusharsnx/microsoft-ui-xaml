@@ -77,6 +77,10 @@ internal static class SessionSchema
             FrameId INTEGER NOT NULL REFERENCES Frames (FrameId),
             Bucket TEXT NOT NULL);     -- Xaml, Composition or Other
         CREATE INDEX FrameContents ON FrameEvents (FrameId);
+        CREATE TABLE Threads (         -- process threads and their roles
+            ThreadId INTEGER PRIMARY KEY,
+            Role TEXT NOT NULL,        -- Main, Render, or Worker
+            Name TEXT NOT NULL);
         -- The events the InterestingRows view reads, found by type instead of a scan of every event.
         CREATE INDEX EventsByType ON Events (TypeId);
         CREATE VIEW EventDetails AS

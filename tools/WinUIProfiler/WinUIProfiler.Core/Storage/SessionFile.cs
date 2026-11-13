@@ -18,6 +18,9 @@ public sealed record SessionFileInfo(int ProcessId, string? ProcessName, string 
     long? CompleteFromSeq, int? LostByEtw, long? DroppedByProfiler, long LimitBytes, long UIElements, long Visuals, long Frames,
     double? ProcessStartMilliseconds, int? LauncherProcessId = null, string? LauncherName = null);
 
+// A process thread, its identified role (Main, Render, or Worker), and its display name.
+public sealed record SessionThread(int ThreadId, string Role, string Name);
+
 // The kinds of objects the session file indexes (SessionSchema's Objects.Kind).
 public enum ObjectKind
 {
@@ -507,6 +510,71 @@ public static class SessionFile
         return list;
     }
 
+    public static IReadOnlyList<SessionThread> ReadThreads(string path)
+    {
+        using var connection = Open(path);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        if (HasTable(connection, transaction, "Threads"))
+        {
+            using var command = Command(connection, transaction, "SELECT ThreadId, Role, Name FROM Threads ORDER BY ThreadId");
+            using var reader = command.ExecuteReader();
+            var list = new List<SessionThread>();
+            while (reader.Read())
+            {
+                list.Add(new(reader.GetInt32(0), reader.GetString(1), reader.GetString(2)));
+            }
+            if (list.Count > 0) return list;
+        }
+
+        // Fallback for sessions recorded before Threads table existed
+        var threads = new Dictionary<int, SessionThread>();
+        using (var frameCmd = Command(connection, transaction, "SELECT DISTINCT ThreadId FROM Frames ORDER BY FrameId"))
+        using (var reader = frameCmd.ExecuteReader())
+        {
+            bool first = true;
+            while (reader.Read())
+            {
+                int tid = reader.GetInt32(0);
+                threads[tid] = new(tid, "Main", first ? "Main UI Thread" : $"UI Thread ({tid})");
+                first = false;
+            }
+        }
+
+        var renderTypeIds = new List<long>();
+        using (var typeCmd = Command(connection, transaction, """
+            SELECT TypeId FROM EventTypes
+            WHERE Name LIKE '%RenderThreadWaitForWork%' OR Name LIKE '%Scheduling_UIThreadRequest%' OR Name LIKE '%CompositorLock%'
+            """))
+        using (var reader = typeCmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                renderTypeIds.Add(reader.GetInt64(0));
+            }
+        }
+
+        if (renderTypeIds.Count > 0)
+        {
+            using var renderCmd = Command(connection, transaction, $"""
+                SELECT ThreadId FROM Events
+                WHERE TypeId IN ({string.Join(",", renderTypeIds)})
+                LIMIT 5
+                """);
+            using var reader = renderCmd.ExecuteReader();
+            while (reader.Read())
+            {
+                int tid = reader.GetInt32(0);
+                if (!threads.ContainsKey(tid))
+                {
+                    threads[tid] = new(tid, "Render", "Render Thread");
+                    break;
+                }
+            }
+        }
+
+        return threads.Values.OrderBy(t => t.ThreadId).ToList();
+    }
+
     // Where a query's events come from and which of them it keeps. Every scope names a view with EventDetails' columns d.
     private sealed record EventScope(string From, string Where, (string Name, object? Value)[] Parameters);
 
@@ -645,6 +713,10 @@ public static class SessionFile
     private static bool HasColumn(SqliteConnection connection, SqliteTransaction? transaction, string table, string column) =>
         Sql.Scalar(connection, $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = $column", transaction,
             ("$column", column)) > 0;
+
+    private static bool HasTable(SqliteConnection connection, SqliteTransaction? transaction, string table) =>
+        Sql.Scalar(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $table", transaction,
+            ("$table", table)) > 0;
 
     // The mentions column of EventDetails: one object per mention, with the name of the field that holds the address.
     private static IReadOnlyList<ObjectMention> Mentions(string json)

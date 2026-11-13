@@ -27,6 +27,13 @@ public sealed class TimelineActivity
     public XamlProvider Provider { get; set; }
     public int Depth { get; set; }
     public bool IsDuration { get; set; }
+    public double? FrameLatencyMs { get; set; }
+    public double? FrameRequestMs { get; set; }
+    public double? FrameCommitMs { get; set; }
+
+    public bool IsFrameRequest => FrameMarkers.IsFrameRequest(Name);
+    public bool IsFrameCommit => FrameMarkers.IsFrameCommit(Name);
+    public bool IsDelayedFrameRequest => IsFrameRequest && (!FrameLatencyMs.HasValue || FrameLatencyMs.Value > 16.66);
 
     public override string ToString() =>
         IsDuration
@@ -147,8 +154,11 @@ public static class TimelineActivityBuilder
             }
         }
 
-        // Assign waterfall depths per bucket
+        // Assign waterfall depths per thread
         AssignDepths(activities);
+
+        // Calculate frame latency for committed frame events
+        CalculateFrameLatencies(activities);
 
         return (activities, minMs, maxMs);
     }
@@ -215,8 +225,8 @@ public static class TimelineActivityBuilder
 
     private static void AssignDepths(List<TimelineActivity> activities)
     {
-        // Group activities by bucket: Xaml, Composition, Other
-        var groups = activities.GroupBy(a => a.Bucket);
+        // Group activities per process thread
+        var groups = activities.GroupBy(a => a.ThreadId);
 
         foreach (var group in groups)
         {
@@ -250,4 +260,58 @@ public static class TimelineActivityBuilder
             }
         }
     }
+
+    private static void CalculateFrameLatencies(List<TimelineActivity> activities)
+    {
+        // Get all frame requests and commits, ordered chronologically by effective timestamp
+        var frameEvents = activities
+            .Where(a => a.IsFrameRequest || a.IsFrameCommit)
+            .OrderBy(a => a.IsFrameCommit && a.IsDuration ? a.EndMs : a.StartMs)
+            .ThenBy(a => a.IsFrameRequest ? 0 : 1) // If same timestamp, request precedes commit
+            .ToList();
+
+        var unfulfilledRequests = new Queue<TimelineActivity>();
+
+        foreach (var act in frameEvents)
+        {
+            if (act.IsFrameRequest)
+            {
+                unfulfilledRequests.Enqueue(act);
+            }
+            else if (act.IsFrameCommit)
+            {
+                double commitTime = act.IsDuration ? act.EndMs : act.StartMs;
+
+                // The duration between the commit time and the oldest unfulfilled request time
+                if (unfulfilledRequests.Count > 0 && unfulfilledRequests.Peek().StartMs <= commitTime)
+                {
+                    var oldestReq = unfulfilledRequests.Peek();
+                    act.FrameRequestMs = oldestReq.StartMs;
+                    act.FrameLatencyMs = Math.Max(0.0, commitTime - oldestReq.StartMs);
+
+                    // All requests up to commit time are fulfilled by this commit
+                    while (unfulfilledRequests.Count > 0 && unfulfilledRequests.Peek().StartMs <= commitTime)
+                    {
+                        var req = unfulfilledRequests.Dequeue();
+                        req.FrameCommitMs = commitTime;
+                        req.FrameLatencyMs = Math.Max(0.0, commitTime - req.StartMs);
+                    }
+                }
+            }
+        }
+    }
+}
+
+public static class FrameMarkers
+{
+    public static bool IsFrameRequest(string name) =>
+        name.Contains("RequestFrameReason", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("RequestAdditionalFrame", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("RequestFrame", StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsFrameCommit(string name) =>
+        name.Contains("CommitMainDevice", StringComparison.OrdinalIgnoreCase) ||
+        (name.Contains("Commit", StringComparison.OrdinalIgnoreCase) &&
+         !name.Contains("Request", StringComparison.OrdinalIgnoreCase) &&
+         !name.Contains("PrivateCommit", StringComparison.OrdinalIgnoreCase));
 }
