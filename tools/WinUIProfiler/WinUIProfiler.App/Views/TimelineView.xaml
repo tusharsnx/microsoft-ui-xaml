@@ -10,11 +10,11 @@
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Default">
                     <SolidColorBrush x:Key="XamlColorBrush" Color="#0078D4" />
-                    <SolidColorBrush x:Key="XamlFillBrush" Color="#350078D4" />
+                    <SolidColorBrush x:Key="XamlFillBrush" Color="#1F384B" />
                     <SolidColorBrush x:Key="CompositionColorBrush" Color="#8764B8" />
-                    <SolidColorBrush x:Key="CompositionFillBrush" Color="#358764B8" />
+                    <SolidColorBrush x:Key="CompositionFillBrush" Color="#3B3445" />
                     <SolidColorBrush x:Key="OtherColorBrush" Color="#D83B01" />
-                    <SolidColorBrush x:Key="OtherFillBrush" Color="#35D83B01" />
+                    <SolidColorBrush x:Key="OtherFillBrush" Color="#4C2B1F" />
                     <SolidColorBrush x:Key="TrackBackgroundBrush" Color="#08FFFFFF" />
                     <SolidColorBrush x:Key="RulerBackgroundBrush" Color="#12FFFFFF" />
                     <SolidColorBrush x:Key="SplitterHandleBrush" Color="#20FFFFFF" />
@@ -22,9 +22,13 @@
                     <SolidColorBrush x:Key="SelectionWindowFill" Color="#280078D4" />
                     <SolidColorBrush x:Key="SelectionHandleBrush" Color="#0078D4" />
                     <SolidColorBrush x:Key="DimCoverBrush" Color="#60000000" />
-                    <SolidColorBrush x:Key="FrameRequestMarkerBrush" Color="#80FFFFFF" />
-                    <SolidColorBrush x:Key="FrameRequestDelayedMarkerBrush" Color="#FFFF4343" />
+                    <SolidColorBrush x:Key="FrameRequestMarkerBrush" Color="#70A0A0A0" />
                     <SolidColorBrush x:Key="FrameCommitMarkerBrush" Color="#27C380" />
+                    <SolidColorBrush x:Key="FrameCommitDelayedMarkerBrush" Color="#FFFF4343" />
+                    <SolidColorBrush x:Key="IdleWaitStrokeBrush" Color="#A0A0A0" />
+                    <SolidColorBrush x:Key="IdleWaitFillBrush" Color="#2E2E2E" />
+                    <SolidColorBrush x:Key="LockSpanBrush" Color="#B388FF" />
+                    <SolidColorBrush x:Key="LockRegionFillBrush" Color="#2F2D34" />
                     <AcrylicBrush x:Key="HoverPopupBackground" TintColor="#202020" TintOpacity="0.8" FallbackColor="#202020" />
                     <SolidColorBrush x:Key="HoverPopupBorder" Color="#4A4A4A" />
                     <AcrylicBrush x:Key="SidePanelBackground" TintColor="#1E1E1E" TintOpacity="0.8" FallbackColor="#1E1E1E" />
@@ -32,11 +36,11 @@
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Light">
                     <SolidColorBrush x:Key="XamlColorBrush" Color="#005A9E" />
-                    <SolidColorBrush x:Key="XamlFillBrush" Color="#250078D4" />
+                    <SolidColorBrush x:Key="XamlFillBrush" Color="#D6E7F4" />
                     <SolidColorBrush x:Key="CompositionColorBrush" Color="#6B2D8B" />
-                    <SolidColorBrush x:Key="CompositionFillBrush" Color="#258764B8" />
+                    <SolidColorBrush x:Key="CompositionFillBrush" Color="#E9E4F0" />
                     <SolidColorBrush x:Key="OtherColorBrush" Color="#A80000" />
-                    <SolidColorBrush x:Key="OtherFillBrush" Color="#25D83B01" />
+                    <SolidColorBrush x:Key="OtherFillBrush" Color="#F5DED6" />
                     <SolidColorBrush x:Key="TrackBackgroundBrush" Color="#06000000" />
                     <SolidColorBrush x:Key="RulerBackgroundBrush" Color="#0C000000" />
                     <SolidColorBrush x:Key="SplitterHandleBrush" Color="#18000000" />
@@ -45,8 +49,12 @@
                     <SolidColorBrush x:Key="SelectionHandleBrush" Color="#005A9E" />
                     <SolidColorBrush x:Key="DimCoverBrush" Color="#35000000" />
                     <SolidColorBrush x:Key="FrameRequestMarkerBrush" Color="#50000000" />
-                    <SolidColorBrush x:Key="FrameRequestDelayedMarkerBrush" Color="#FFD13438" />
                     <SolidColorBrush x:Key="FrameCommitMarkerBrush" Color="#107C41" />
+                    <SolidColorBrush x:Key="FrameCommitDelayedMarkerBrush" Color="#FFD13438" />
+                    <SolidColorBrush x:Key="IdleWaitStrokeBrush" Color="#B5B5B5" />
+                    <SolidColorBrush x:Key="IdleWaitFillBrush" Color="#F2F2F2" />
+                    <SolidColorBrush x:Key="LockSpanBrush" Color="#7C3AED" />
+                    <SolidColorBrush x:Key="LockRegionFillBrush" Color="#ECE6F7" />
                     <AcrylicBrush x:Key="HoverPopupBackground" TintColor="#F9F9F9" TintOpacity="0.8" FallbackColor="#F9F9F9" />
                     <SolidColorBrush x:Key="HoverPopupBorder" Color="#D0D0D0" />
                     <AcrylicBrush x:Key="SidePanelBackground" TintColor="#F8F8F8" TintOpacity="0.8" FallbackColor="#F8F8F8" />
@@ -90,6 +98,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
@@ -104,6 +113,21 @@
                 <FontIcon Glyph="&#xE738;" FontSize="12" />
             </Button>
             <Button x:Name="FitAllButton" x:Uid="TimelineFitAll" Grid.Column="3" Click="FitAll_Click" />
+
+            <DropDownButton x:Name="ViewSettingsButton" Grid.Column="4" ToolTipService.ToolTip="View Options">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon Glyph="&#xE713;" FontSize="12" />
+                    <TextBlock Text="View" FontSize="12" />
+                </StackPanel>
+                <DropDownButton.Flyout>
+                    <MenuFlyout Placement="BottomEdgeAlignedRight">
+                        <ToggleMenuFlyoutItem x:Name="ShowLockRegionsToggle"
+                                              Text="Show Compositor Lock regions"
+                                              IsChecked="False"
+                                              Click="ShowLockRegionsToggle_Click" />
+                    </MenuFlyout>
+                </DropDownButton.Flyout>
+            </DropDownButton>
         </Grid>
 
         <!-- 1: Overview Panel -->
@@ -140,19 +164,35 @@
                             <TextBlock Text="Other" Style="{ThemeResource CaptionTextBlockStyle}" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
-                                    ToolTipService.ToolTip="Frame request hint (RequestFrameReason)">
-                            <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameRequestMarkerBrush}" RadiusX="1" RadiusY="1" Opacity="0.5" />
+                                    ToolTipService.ToolTip="Scheduler waiting / idle time (WaitForWork, WaitForCompositorClock)">
+                            <Border Width="12" Height="10" BorderBrush="{ThemeResource IdleWaitStrokeBrush}" BorderThickness="1" CornerRadius="1">
+                                <Rectangle Width="1" Height="10" Fill="{ThemeResource IdleWaitStrokeBrush}" RenderTransformOrigin="0.5,0.5">
+                                    <Rectangle.RenderTransform>
+                                        <RotateTransform Angle="45" />
+                                    </Rectangle.RenderTransform>
+                                </Rectangle>
+                            </Border>
+                            <TextBlock Text="Idle / Wait" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </StackPanel>
+                        <StackPanel x:Name="LockRegionLegendItem" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                    ToolTipService.ToolTip="Compositor Lock region (shaded background canvas during lock duration)">
+                            <Border Width="12" Height="10" Background="{ThemeResource LockRegionFillBrush}" BorderBrush="{ThemeResource LockSpanBrush}" BorderThickness="1" CornerRadius="1" />
+                            <TextBlock Text="Lock Region" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                    ToolTipService.ToolTip="Frame request queued (Scheduling_QueueTick)">
+                            <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameRequestMarkerBrush}" RadiusX="1" RadiusY="1" Opacity="0.4" />
                             <TextBlock Text="Frame Request" Style="{ThemeResource CaptionTextBlockStyle}" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
-                                    ToolTipService.ToolTip="Delayed frame request (&gt; 16.66ms or unfulfilled)">
-                            <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameRequestDelayedMarkerBrush}" RadiusX="1" RadiusY="1" />
-                            <TextBlock Text="Delayed Request (&gt;16.66ms)" Style="{ThemeResource CaptionTextBlockStyle}" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
-                                    ToolTipService.ToolTip="Frame commit (CommitMainDevice)">
+                                    ToolTipService.ToolTip="Frame commit on time (&lt;= 16.66ms)">
                             <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameCommitMarkerBrush}" RadiusX="1" RadiusY="1" />
                             <TextBlock Text="Frame Commit" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                    ToolTipService.ToolTip="Delayed frame commit (&gt; 16.66ms)">
+                            <Rectangle Width="2" Height="10" Fill="{ThemeResource FrameCommitDelayedMarkerBrush}" RadiusX="1" RadiusY="1" />
+                            <TextBlock Text="Delayed Commit (&gt;16.66ms)" Style="{ThemeResource CaptionTextBlockStyle}" />
                         </StackPanel>
                     </StackPanel>
 
@@ -163,8 +203,6 @@
                 <!-- Line Plot & Range Shading -->
                 <Grid x:Name="OverviewContainer" Grid.Row="1" Background="{ThemeResource TrackBackgroundBrush}"
                       SizeChanged="OverviewContainer_SizeChanged"
-                      ManipulationMode="TranslateX,TranslateInertia"
-                      ManipulationDelta="Tracks_ManipulationDelta"
                       PointerPressed="Overview_PointerPressed"
                       PointerMoved="Overview_PointerMoved"
                       PointerReleased="Overview_PointerReleased"
@@ -174,9 +212,9 @@
                       DoubleTapped="Overview_DoubleTapped">
                     <!-- Frame Markers (Requests and Commits) -->
                     <Canvas x:Name="OverviewMarkersCanvas" IsHitTestVisible="False">
-                        <Path x:Name="OverviewFrameRequestsPath" Stroke="{ThemeResource FrameRequestMarkerBrush}" StrokeThickness="1" Opacity="0.45" />
-                        <Path x:Name="OverviewFrameRequestsDelayedPath" Stroke="{ThemeResource FrameRequestDelayedMarkerBrush}" StrokeThickness="1.5" />
+                        <Path x:Name="OverviewFrameRequestsPath" Stroke="{ThemeResource FrameRequestMarkerBrush}" StrokeThickness="1" Opacity="0.4" />
                         <Path x:Name="OverviewFrameCommitsPath" Stroke="{ThemeResource FrameCommitMarkerBrush}" StrokeThickness="1.5" />
+                        <Path x:Name="OverviewFrameCommitsDelayedPath" Stroke="{ThemeResource FrameCommitDelayedMarkerBrush}" StrokeThickness="1.5" />
                     </Canvas>
 
                     <!-- Graph Paths -->
@@ -244,8 +282,6 @@
                             <Canvas x:Name="FramesCanvas"
                                     Height="34"
                                     Background="Transparent"
-                                    ManipulationMode="System,TranslateX,TranslateInertia"
-                                    ManipulationDelta="Tracks_ManipulationDelta"
                                     PointerWheelChanged="Tracks_PointerWheelChanged"
                                     SizeChanged="TrackCanvas_SizeChanged"
                                     PointerPressed="Track_PointerPressed"

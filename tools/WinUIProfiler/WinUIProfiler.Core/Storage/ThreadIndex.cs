@@ -33,13 +33,14 @@ internal sealed class ThreadIndex : IDisposable
         bool isMain = eventName == "CoreServices_Frame";
         bool isRender = eventName.Contains("RenderThreadWaitForWork", StringComparison.OrdinalIgnoreCase) ||
                         eventName.Contains("Scheduling_UIThreadRequest", StringComparison.OrdinalIgnoreCase) ||
-                        eventName.Contains("CompositorLock", StringComparison.OrdinalIgnoreCase);
+                        eventName.Contains("CompositorLock", StringComparison.OrdinalIgnoreCase) ||
+                        eventName.Contains("WaitForCompositorClock", StringComparison.OrdinalIgnoreCase);
 
         if (!threads.TryGetValue(threadId, out var existing))
         {
             string role = isMain ? "Main" : (isRender ? "Render" : "Worker");
             string name = isMain ? (!hasMainThread ? "Main UI Thread" : $"UI Thread ({threadId})")
-                                 : (isRender ? "Render Thread" : $"Worker Thread ({threadId})");
+                                 : (isRender ? "Compositor Scheduler" : $"Worker Thread ({threadId})");
             if (isMain) hasMainThread = true;
 
             threads[threadId] = (role, name);
@@ -58,7 +59,7 @@ internal sealed class ThreadIndex : IDisposable
             else if (isRender)
             {
                 string role = "Render";
-                string name = "Render Thread";
+                string name = "Compositor Scheduler";
                 threads[threadId] = (role, name);
                 SaveThread(threadId, role, name);
             }

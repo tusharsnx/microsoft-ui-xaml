@@ -31,14 +31,18 @@ public sealed partial class TimelineView : UserControl
     private const double MinTrackHeight = 44;
 
     private static readonly SolidColorBrush XamlBrush = new(Color.FromArgb(0xFF, 0x00, 0x78, 0xD4));
-    private static readonly SolidColorBrush XamlFill = new(Color.FromArgb(0x35, 0x00, 0x78, 0xD4));
+    private static readonly SolidColorBrush XamlFill = new(Color.FromArgb(0xFF, 0x1F, 0x38, 0x4B));
     private static readonly SolidColorBrush CompBrush = new(Color.FromArgb(0xFF, 0x87, 0x64, 0xB8));
-    private static readonly SolidColorBrush CompFill = new(Color.FromArgb(0x35, 0x87, 0x64, 0xB8));
+    private static readonly SolidColorBrush CompFill = new(Color.FromArgb(0xFF, 0x3B, 0x34, 0x45));
     private static readonly SolidColorBrush OtherBrush = new(Color.FromArgb(0xFF, 0xD8, 0x3B, 0x01));
-    private static readonly SolidColorBrush OtherFill = new(Color.FromArgb(0x35, 0xD8, 0x3B, 0x01));
-    private static readonly SolidColorBrush FrameRequestBrush = new(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF));
-    private static readonly SolidColorBrush FrameRequestDelayedBrush = new(Color.FromArgb(0xFF, 0xFF, 0x43, 0x43));
+    private static readonly SolidColorBrush OtherFill = new(Color.FromArgb(0xFF, 0x4C, 0x2B, 0x1F));
+    private static readonly SolidColorBrush IdleWaitBrush = new(Color.FromArgb(0xFF, 0xA0, 0xA0, 0xA0));
+    private static readonly SolidColorBrush IdleWaitFill = new(Color.FromArgb(0xFF, 0x2E, 0x2E, 0x2E));
+    private static readonly SolidColorBrush LockSpanBrush = new(Color.FromArgb(0xFF, 0xB3, 0x88, 0xFF));
+    private static readonly SolidColorBrush LockRegionFill = new(Color.FromArgb(0xFF, 0x2F, 0x2D, 0x34));
+    private static readonly SolidColorBrush FrameRequestBrush = new(Color.FromArgb(0x70, 0xA0, 0xA0, 0xA0));
     private static readonly SolidColorBrush FrameCommitBrush = new(Color.FromArgb(0xFF, 0x27, 0xC3, 0x80));
+    private static readonly SolidColorBrush FrameCommitDelayedBrush = new(Color.FromArgb(0xFF, 0xFF, 0x43, 0x43));
     private static readonly SolidColorBrush TextSecBrush = new(Color.FromArgb(0xAA, 0xFF, 0xFF, 0xFF));
     private static readonly SolidColorBrush AttentionBrush = new(Color.FromArgb(0xFF, 0xFF, 0xC8, 0x3B));
 
@@ -55,7 +59,8 @@ public sealed partial class TimelineView : UserControl
         public double StartMs { get; set; }
         public double EndMs { get; set; }
         public int ClusterCount { get; set; }
-        public TimelineActivity Dominant { get; set; } = null!;
+        public TimelineActivity? Dominant { get; set; }
+        public TimelineLockRegion? LockRegion { get; set; }
         public bool IsDuration { get; set; }
     }
 
@@ -65,6 +70,7 @@ public sealed partial class TimelineView : UserControl
         public string Role { get; init; } = "Worker";
         public string Name { get; init; } = "";
         public IReadOnlyList<TimelineActivity> Activities { get; init; } = [];
+        public IReadOnlyList<TimelineLockRegion> LockRegions { get; init; } = [];
         public double MaxDuration { get; init; }
         public int MaxDepth { get; init; }
         public bool IsCollapsed { get; set; }
@@ -81,10 +87,13 @@ public sealed partial class TimelineView : UserControl
 
     // Timeline data
     private IReadOnlyList<TimelineActivity> allActivities = [];
+    private IReadOnlyList<TimelineLockRegion> allLockRegions = [];
     private IReadOnlyList<TimelineActivity> frameActivities = [];
     private IReadOnlyList<double> frameRequestTimes = [];
-    private IReadOnlyList<double> frameRequestDelayedTimes = [];
     private IReadOnlyList<double> frameCommitTimes = [];
+    private IReadOnlyList<double> frameCommitDelayedTimes = [];
+    private bool showLockRegions;
+    private TimelineLockRegion? selectedLockRegion;
     private double totalMinMs;
     private double totalMaxMs;
     private bool renderPending;
@@ -200,12 +209,12 @@ public sealed partial class TimelineView : UserControl
 
         try
         {
-            var (threads, activities, minMs, maxMs) = await Task.Run(() =>
+            var (threads, activities, minMs, maxMs, lockRegions) = await Task.Run(() =>
             {
                 var threads = SessionFile.ReadThreads(path);
                 var rawEvents = SessionFile.ReadTimelineRawEvents(path, cts.Token);
-                var (activities, minMs, maxMs) = TimelineActivityBuilder.Build(rawEvents);
-                return (threads, activities, minMs, maxMs);
+                var (activities, minMs, maxMs, lockRegions) = TimelineActivityBuilder.Build(rawEvents);
+                return (threads, activities, minMs, maxMs, lockRegions);
             }, cts.Token);
 
             if (cts.Token.IsCancellationRequested) return;
@@ -217,19 +226,20 @@ public sealed partial class TimelineView : UserControl
             }
 
             allActivities = activities;
+            allLockRegions = lockRegions;
             frameActivities = activities.Where(a => a.IsFrameRequest || a.IsFrameCommit).OrderBy(a => a.StartMs).ToList();
             frameRequestTimes = activities
-                .Where(a => a.IsFrameRequest && !a.IsDelayedFrameRequest)
-                .Select(a => a.StartMs)
-                .OrderBy(time => time)
-                .ToList();
-            frameRequestDelayedTimes = activities
-                .Where(a => a.IsDelayedFrameRequest)
+                .Where(a => a.IsFrameRequest)
                 .Select(a => a.StartMs)
                 .OrderBy(time => time)
                 .ToList();
             frameCommitTimes = activities
-                .Where(a => a.IsFrameCommit)
+                .Where(a => a.IsFrameCommit && !a.IsDelayedFrameCommit)
+                .Select(a => a.IsDuration ? a.EndMs : a.StartMs)
+                .OrderBy(time => time)
+                .ToList();
+            frameCommitDelayedTimes = activities
+                .Where(a => a.IsDelayedFrameCommit)
                 .Select(a => a.IsDuration ? a.EndMs : a.StartMs)
                 .OrderBy(time => time)
                 .ToList();
@@ -255,12 +265,14 @@ public sealed partial class TimelineView : UserControl
                     var actList = g.OrderBy(a => a.StartMs).ToList();
                     double maxDur = actList.Count > 0 ? actList.Max(a => a.DurationMs) : 0;
                     int maxDepth = actList.Count > 0 ? actList.Max(a => a.Depth) : 0;
+                    var trackLocks = lockRegions.Where(l => l.ThreadId == tid).OrderBy(l => l.StartMs).ToList();
                     return new ThreadTrackInfo
                     {
                         ThreadId = tid,
                         Role = role,
                         Name = name,
                         Activities = actList,
+                        LockRegions = trackLocks,
                         MaxDuration = maxDur,
                         MaxDepth = maxDepth,
                         IsCollapsed = false
@@ -326,11 +338,11 @@ public sealed partial class TimelineView : UserControl
             OverviewCompPath.Data = null;
             OverviewOtherPath.Data = null;
             OverviewFrameRequestsPath.Data = null;
-            OverviewFrameRequestsDelayedPath.Data = null;
             OverviewFrameCommitsPath.Data = null;
+            OverviewFrameCommitsDelayedPath.Data = null;
             frameRequestTimes = [];
-            frameRequestDelayedTimes = [];
             frameCommitTimes = [];
+            frameCommitDelayedTimes = [];
             frameActivities = [];
             threadTracks.Clear();
             canvasVisualItems.Clear();
@@ -363,8 +375,8 @@ public sealed partial class TimelineView : UserControl
         OverviewEndText.Text = $"{totalMaxMs:N1} ms";
 
         OverviewFrameRequestsPath.Data = CreateMarkerGeometry(frameRequestTimes, totalMinMs, totalMaxMs, width, height);
-        OverviewFrameRequestsDelayedPath.Data = CreateMarkerGeometry(frameRequestDelayedTimes, totalMinMs, totalMaxMs, width, height);
         OverviewFrameCommitsPath.Data = CreateMarkerGeometry(frameCommitTimes, totalMinMs, totalMaxMs, width, height);
+        OverviewFrameCommitsDelayedPath.Data = CreateMarkerGeometry(frameCommitDelayedTimes, totalMinMs, totalMaxMs, width, height);
 
         double duration = Math.Max(0.001, totalMaxMs - totalMinMs);
         int bins = OverviewBins;
@@ -374,6 +386,7 @@ public sealed partial class TimelineView : UserControl
 
         foreach (var act in allActivities)
         {
+            if (act.IsLock) continue;
             int binStart = (int)Math.Clamp((act.StartMs - totalMinMs) / duration * bins, 0, bins - 1);
             int binEnd = (int)Math.Clamp((act.EndMs - totalMinMs) / duration * bins, 0, bins - 1);
 
@@ -381,7 +394,7 @@ public sealed partial class TimelineView : UserControl
             {
                 if (act.Bucket == "Xaml") xamlCounts[b]++;
                 else if (act.Bucket == "Composition") compCounts[b]++;
-                else otherCounts[b]++;
+                else if (act.Bucket == "Other") otherCounts[b]++;
             }
         }
 
@@ -581,7 +594,7 @@ public sealed partial class TimelineView : UserControl
         {
             double deltaX = pt.Position.X - overviewDragStartX;
             double deltaMs = (deltaX / width) * totalDuration;
-            double newStart = Math.Clamp(overviewDragStartViewStart + deltaMs, totalMinMs, viewEndMs - 0.1);
+            double newStart = Math.Clamp(overviewDragStartViewStart + deltaMs, totalMinMs, overviewDragStartViewEnd - 0.1);
             viewStartMs = newStart;
             RequestRender();
         }
@@ -589,7 +602,7 @@ public sealed partial class TimelineView : UserControl
         {
             double deltaX = pt.Position.X - overviewDragStartX;
             double deltaMs = (deltaX / width) * totalDuration;
-            double newEnd = Math.Clamp(overviewDragStartViewEnd + deltaMs, viewStartMs + 0.1, totalMaxMs);
+            double newEnd = Math.Clamp(overviewDragStartViewEnd + deltaMs, overviewDragStartViewStart + 0.1, totalMaxMs);
             viewEndMs = newEnd;
             RequestRender();
         }
@@ -597,10 +610,9 @@ public sealed partial class TimelineView : UserControl
         {
             double deltaX = pt.Position.X - overviewDragStartX;
             double deltaMs = (deltaX / width) * totalDuration;
-            double span = overviewDragStartViewEnd - overviewDragStartViewStart;
-            double newStart = overviewDragStartViewStart + deltaMs;
-            if (newStart < totalMinMs) newStart = totalMinMs;
-            if (newStart + span > totalMaxMs) newStart = totalMaxMs - span;
+            double span = Math.Min(totalDuration, overviewDragStartViewEnd - overviewDragStartViewStart);
+            double maxStart = Math.Max(totalMinMs, totalMaxMs - span);
+            double newStart = Math.Clamp(overviewDragStartViewStart + deltaMs, totalMinMs, maxStart);
             viewStartMs = newStart;
             viewEndMs = newStart + span;
             RequestRender();
@@ -870,6 +882,29 @@ public sealed partial class TimelineView : UserControl
         return result;
     }
 
+    private static int FindFirstStartIndex(IReadOnlyList<TimelineLockRegion> list, double minStartMs)
+    {
+        int low = 0;
+        int high = list.Count - 1;
+        int result = list.Count;
+
+        while (low <= high)
+        {
+            int mid = low + ((high - low) >> 1);
+            if (list[mid].StartMs >= minStartMs)
+            {
+                result = mid;
+                high = mid - 1;
+            }
+            else
+            {
+                low = mid + 1;
+            }
+        }
+
+        return result;
+    }
+
     private void UpdateToolbarStatus()
     {
         double duration = Math.Max(0, viewEndMs - viewStartMs);
@@ -905,6 +940,7 @@ public sealed partial class TimelineView : UserControl
                     {
                         case "Xaml": visibleXaml++; break;
                         case "Composition": visibleComp++; break;
+                        case "Idle": break;
                         default: visibleOther++; break;
                     }
                 }
@@ -942,12 +978,12 @@ public sealed partial class TimelineView : UserControl
         if (startIdx >= frameActivities.Count) return;
 
         var requestGeom = new GeometryGroup();
-        var requestDelayedGeom = new GeometryGroup();
         var commitGeom = new GeometryGroup();
+        var commitDelayedGeom = new GeometryGroup();
 
         var seenRequestX = new HashSet<int>();
-        var seenRequestDelayedX = new HashSet<int>();
         var seenCommitX = new HashSet<int>();
+        var seenCommitDelayedX = new HashSet<int>();
 
         for (int i = startIdx; i < frameActivities.Count; i++)
         {
@@ -964,25 +1000,12 @@ public sealed partial class TimelineView : UserControl
 
             if (act.IsFrameRequest)
             {
-                if (act.IsDelayedFrameRequest)
+                if (seenRequestX.Add(px))
                 {
-                    if (seenRequestDelayedX.Add(px))
+                    requestGeom.Children.Add(new RectangleGeometry
                     {
-                        requestDelayedGeom.Children.Add(new RectangleGeometry
-                        {
-                            Rect = new Rect(x - 0.75, 0, 1.5, height)
-                        });
-                    }
-                }
-                else
-                {
-                    if (seenRequestX.Add(px))
-                    {
-                        requestGeom.Children.Add(new RectangleGeometry
-                        {
-                            Rect = new Rect(x - 0.75, 0, 1.5, height)
-                        });
-                    }
+                        Rect = new Rect(x - 0.75, 0, 1.5, height)
+                    });
                 }
 
                 visualItems.Add(new VisualHitItem
@@ -1000,12 +1023,25 @@ public sealed partial class TimelineView : UserControl
             }
             else if (act.IsFrameCommit)
             {
-                if (seenCommitX.Add(px))
+                if (act.IsDelayedFrameCommit)
                 {
-                    commitGeom.Children.Add(new RectangleGeometry
+                    if (seenCommitDelayedX.Add(px))
                     {
-                        Rect = new Rect(x - 1, 0, 2, height)
-                    });
+                        commitDelayedGeom.Children.Add(new RectangleGeometry
+                        {
+                            Rect = new Rect(x - 1, 0, 2, height)
+                        });
+                    }
+                }
+                else
+                {
+                    if (seenCommitX.Add(px))
+                    {
+                        commitGeom.Children.Add(new RectangleGeometry
+                        {
+                            Rect = new Rect(x - 1, 0, 2, height)
+                        });
+                    }
                 }
 
                 visualItems.Add(new VisualHitItem
@@ -1035,17 +1071,6 @@ public sealed partial class TimelineView : UserControl
             FramesCanvas.Children.Add(requestPath);
         }
 
-        if (requestDelayedGeom.Children.Count > 0)
-        {
-            var requestDelayedPath = new ShapePath
-            {
-                Data = requestDelayedGeom,
-                Fill = FrameRequestDelayedBrush,
-                IsHitTestVisible = false
-            };
-            FramesCanvas.Children.Add(requestDelayedPath);
-        }
-
         if (commitGeom.Children.Count > 0)
         {
             var commitPath = new ShapePath
@@ -1055,6 +1080,17 @@ public sealed partial class TimelineView : UserControl
                 IsHitTestVisible = false
             };
             FramesCanvas.Children.Add(commitPath);
+        }
+
+        if (commitDelayedGeom.Children.Count > 0)
+        {
+            var commitDelayedPath = new ShapePath
+            {
+                Data = commitDelayedGeom,
+                Fill = FrameCommitDelayedBrush,
+                IsHitTestVisible = false
+            };
+            FramesCanvas.Children.Add(commitDelayedPath);
         }
 
         if (selectedActivity is not null && (selectedActivity.IsFrameRequest || selectedActivity.IsFrameCommit))
@@ -1123,7 +1159,7 @@ public sealed partial class TimelineView : UserControl
             Text = track.Role switch
             {
                 "Main" => "UI Thread",
-                "Render" => "Render Thread",
+                "Render" => "Compositor Scheduler",
                 _ => "Worker"
             },
             FontSize = 10,
@@ -1133,9 +1169,10 @@ public sealed partial class TimelineView : UserControl
         roleBadge.Child = roleText;
         Grid.SetColumn(roleBadge, 1);
 
+        string displayName = (track.Name == "Render Thread" || track.Role == "Render") ? "Compositor Scheduler" : track.Name;
         var titleText = new TextBlock
         {
-            Text = $"{track.Name} (TID {track.ThreadId})",
+            Text = $"{displayName} (TID {track.ThreadId})",
             FontWeight = FontWeights.SemiBold,
             FontSize = 12,
             Margin = new Thickness(0, 0, 8, 0),
@@ -1169,10 +1206,8 @@ public sealed partial class TimelineView : UserControl
 
         var canvas = new Canvas
         {
-            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-            ManipulationMode = ManipulationModes.System | ManipulationModes.TranslateX | ManipulationModes.TranslateInertia
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent)
         };
-        canvas.ManipulationDelta += Tracks_ManipulationDelta;
         canvas.PointerWheelChanged += Tracks_PointerWheelChanged;
         canvas.SizeChanged += TrackCanvas_SizeChanged;
         canvas.PointerPressed += Track_PointerPressed;
@@ -1260,17 +1295,68 @@ public sealed partial class TimelineView : UserControl
             }
         }
 
-        if (laneDurationMap.Count == 0 && laneInstantMap.Count == 0) return;
+        if (laneDurationMap.Count == 0 && laneInstantMap.Count == 0 && (!showLockRegions || track.LockRegions.Count == 0)) return;
+
+        // 1. Shaded background lock regions (underneath canvas behind all foreground events)
+        if (showLockRegions && track.LockRegions.Count > 0)
+        {
+            var lockRegionGeom = new GeometryGroup();
+            int lockStartIdx = FindFirstStartIndex(track.LockRegions, viewStartMs - 1000);
+
+            for (int li = lockStartIdx; li < track.LockRegions.Count; li++)
+            {
+                var lockReg = track.LockRegions[li];
+                if (lockReg.StartMs > viewEndMs) break;
+                if (lockReg.EndMs < viewStartMs) continue;
+
+                double rawX1 = (lockReg.StartMs - viewStartMs) * pxPerMs;
+                double rawX2 = (lockReg.EndMs - viewStartMs) * pxPerMs;
+                if (rawX2 < -5 || rawX1 > width + 5) continue;
+
+                double x1 = Math.Clamp(rawX1, 0, width);
+                double x2 = Math.Clamp(rawX2, 0, width);
+                double w = Math.Max(2.0, x2 - x1);
+
+                lockRegionGeom.Children.Add(new RectangleGeometry
+                {
+                    Rect = new Rect(x1, 0, w, height)
+                });
+
+                visualItems.Add(new VisualHitItem
+                {
+                    Lane = -1,
+                    X1 = x1,
+                    X2 = x2,
+                    Y = 0,
+                    StartMs = lockReg.StartMs,
+                    EndMs = lockReg.EndMs,
+                    ClusterCount = 1,
+                    LockRegion = lockReg,
+                    IsDuration = true
+                });
+            }
+
+            AddBatchShapePath(canvas, lockRegionGeom, LockRegionFill, null);
+        }
 
         var xamlDurationGeom = new GeometryGroup();
+        var xamlClusterGeom = new GeometryGroup();
         var xamlTicksGeom = new GeometryGroup();
         var compDurationGeom = new GeometryGroup();
+        var compClusterGeom = new GeometryGroup();
         var compTicksGeom = new GeometryGroup();
         var otherDurationGeom = new GeometryGroup();
+        var otherClusterGeom = new GeometryGroup();
         var otherTicksGeom = new GeometryGroup();
+        var idleDurationGeom = new GeometryGroup();
+        var idleClusterGeom = new GeometryGroup();
+        var idleHatchGeom = new GeometryGroup();
+        var lockSolidGeom = new GeometryGroup();
+        var lockDashedGeom = new GeometryGroup();
 
         int textCount = 0;
         const int maxTextElements = 75;
+        var pendingLabels = new List<(TextBlock Label, double Left, double Top)>();
 
         foreach (var ((depth, bucket), laneActs) in laneDurationMap)
         {
@@ -1279,14 +1365,25 @@ public sealed partial class TimelineView : UserControl
             {
                 "Xaml" => xamlDurationGeom,
                 "Composition" => compDurationGeom,
+                "Idle" => idleDurationGeom,
                 _ => otherDurationGeom
+            };
+            var targetClusterGeom = bucket switch
+            {
+                "Xaml" => xamlClusterGeom,
+                "Composition" => compClusterGeom,
+                "Idle" => idleClusterGeom,
+                _ => otherClusterGeom
             };
             var strokeBrush = bucket switch
             {
                 "Xaml" => XamlBrush,
                 "Composition" => CompBrush,
+                "Idle" => IdleWaitBrush,
                 _ => OtherBrush
             };
+
+            var blocks = new List<VisualHitItem>();
 
             double curClusterX1 = double.NaN;
             double curClusterX2 = double.NaN;
@@ -1300,13 +1397,7 @@ public sealed partial class TimelineView : UserControl
             {
                 if (double.IsNaN(curClusterX1)) return;
 
-                double w = Math.Max(2.0, curClusterX2 - curClusterX1);
-                targetDurationGeom.Children.Add(new RectangleGeometry
-                {
-                    Rect = new Rect(curClusterX1, y, w, LaneHeight)
-                });
-
-                visualItems.Add(new VisualHitItem
+                blocks.Add(new VisualHitItem
                 {
                     Lane = depth,
                     X1 = curClusterX1,
@@ -1319,33 +1410,10 @@ public sealed partial class TimelineView : UserControl
                     IsDuration = true
                 });
 
-                if (w >= 36 && textCount < maxTextElements && curClusterX2 > 0 && curClusterX1 < width)
-                {
-                    double labelX = Math.Max(curClusterX1 + 3, 2);
-                    double visibleRight = Math.Min(curClusterX2 - 3, width - 2);
-                    double labelMaxWidth = Math.Max(0, visibleRight - labelX);
-
-                    if (labelMaxWidth >= 20)
-                    {
-                        string labelText = clusterCount > 1
-                            ? $"{dominant!.Name} (+{clusterCount - 1})"
-                            : $"{dominant!.Name} ({dominant.DurationMs:N1} ms)";
-
-                        var label = new TextBlock
-                        {
-                            Text = labelText,
-                            FontSize = 10,
-                            Foreground = strokeBrush,
-                            TextTrimming = TextTrimming.CharacterEllipsis,
-                            IsHitTestVisible = false,
-                            MaxWidth = labelMaxWidth
-                        };
-                        Canvas.SetLeft(label, labelX);
-                        Canvas.SetTop(label, y + 1);
-                        canvas.Children.Add(label);
-                        textCount++;
-                    }
-                }
+                curClusterX1 = double.NaN;
+                clusterCount = 0;
+                dominant = null;
+                maxDur = 0;
             }
 
             foreach (var act in laneActs)
@@ -1354,46 +1422,182 @@ public sealed partial class TimelineView : UserControl
                 double rawX2 = (act.EndMs - viewStartMs) * pxPerMs;
                 if (double.IsNaN(rawX1) || double.IsInfinity(rawX1) || double.IsNaN(rawX2) || double.IsInfinity(rawX2)) continue;
 
+                double naturalW = rawX2 - rawX1;
+                bool isLarge = naturalW >= 3.0;
+
                 double x1 = Math.Clamp(rawX1, -20, width + 20);
                 double x2 = Math.Clamp(rawX2, -20, width + 20);
                 double w = Math.Max(2.0, x2 - x1);
                 x2 = x1 + w;
 
-                if (double.IsNaN(curClusterX1))
+                // Add visual hit item for this SPECIFIC activity
+                visualItems.Add(new VisualHitItem
                 {
-                    curClusterX1 = x1;
-                    curClusterX2 = x2;
-                    curClusterStartMs = act.StartMs;
-                    curClusterEndMs = act.EndMs;
-                    dominant = act;
-                    maxDur = act.DurationMs;
-                    clusterCount = 1;
-                }
-                else if (x1 <= curClusterX2 + 1.5)
+                    Lane = depth,
+                    X1 = x1,
+                    X2 = x2,
+                    Y = y,
+                    StartMs = act.StartMs,
+                    EndMs = act.EndMs,
+                    ClusterCount = 1,
+                    Dominant = act,
+                    IsDuration = true
+                });
+
+                if (isLarge)
                 {
-                    curClusterX2 = Math.Max(curClusterX2, x2);
-                    if (act.EndMs > curClusterEndMs) curClusterEndMs = act.EndMs;
-                    if (act.StartMs < curClusterStartMs) curClusterStartMs = act.StartMs;
-                    clusterCount++;
-                    if (act.DurationMs > maxDur)
+                    FlushCluster();
+
+                    blocks.Add(new VisualHitItem
                     {
-                        dominant = act;
-                        maxDur = act.DurationMs;
-                    }
+                        Lane = depth,
+                        X1 = x1,
+                        X2 = x2,
+                        Y = y,
+                        StartMs = act.StartMs,
+                        EndMs = act.EndMs,
+                        ClusterCount = 1,
+                        Dominant = act,
+                        IsDuration = true
+                    });
                 }
                 else
                 {
-                    FlushCluster();
-                    curClusterX1 = x1;
-                    curClusterX2 = x2;
-                    curClusterStartMs = act.StartMs;
-                    curClusterEndMs = act.EndMs;
-                    dominant = act;
-                    maxDur = act.DurationMs;
-                    clusterCount = 1;
+                    if (double.IsNaN(curClusterX1))
+                    {
+                        curClusterX1 = x1;
+                        curClusterX2 = x2;
+                        curClusterStartMs = act.StartMs;
+                        curClusterEndMs = act.EndMs;
+                        dominant = act;
+                        maxDur = act.DurationMs;
+                        clusterCount = 1;
+                    }
+                    else if (x1 <= curClusterX2 + 1.5)
+                    {
+                        curClusterX2 = Math.Max(curClusterX2, x2);
+                        if (act.EndMs > curClusterEndMs) curClusterEndMs = act.EndMs;
+                        if (act.StartMs < curClusterStartMs) curClusterStartMs = act.StartMs;
+                        clusterCount++;
+                        if (act.DurationMs > maxDur)
+                        {
+                            dominant = act;
+                            maxDur = act.DurationMs;
+                        }
+                    }
+                    else
+                    {
+                        FlushCluster();
+                        curClusterX1 = x1;
+                        curClusterX2 = x2;
+                        curClusterStartMs = act.StartMs;
+                        curClusterEndMs = act.EndMs;
+                        dominant = act;
+                        maxDur = act.DurationMs;
+                        clusterCount = 1;
+                    }
                 }
             }
             FlushCluster();
+
+            // Render blocks with a 1px background divider between adjacent blocks
+            for (int bIdx = 0; bIdx < blocks.Count; bIdx++)
+            {
+                var block = blocks[bIdx];
+
+                double bX1 = block.X1;
+                double bX2 = block.X2;
+                bool hasAdjacentNext = (bIdx + 1 < blocks.Count) && (blocks[bIdx + 1].X1 <= bX2 + 1.5);
+
+                double renderW;
+                if (hasAdjacentNext)
+                {
+                    double targetX2 = Math.Min(bX2, blocks[bIdx + 1].X1 - 1.0);
+                    renderW = Math.Max(2.0, targetX2 - bX1);
+                }
+                else
+                {
+                    renderW = Math.Max(2.0, bX2 - bX1);
+                }
+
+                bool isCluster = block.ClusterCount > 1;
+
+                if (isCluster)
+                {
+                    targetClusterGeom.Children.Add(new RectangleGeometry
+                    {
+                        Rect = new Rect(bX1, y, renderW, LaneHeight)
+                    });
+                }
+                else
+                {
+                    targetDurationGeom.Children.Add(new RectangleGeometry
+                    {
+                        Rect = new Rect(bX1, y, renderW, LaneHeight)
+                    });
+
+                    if (bucket == "Idle")
+                    {
+                        double h = LaneHeight;
+                        double step = 8.0;
+                        double startP = bX1 - h;
+                        double endP = bX1 + renderW;
+
+                        for (double p = startP; p <= endP; p += step)
+                        {
+                            double xStart = p;
+                            double yStart = y;
+                            double xEnd = p + h;
+                            double yEnd = y + h;
+
+                            if (xStart < bX1)
+                            {
+                                yStart = y + (bX1 - xStart);
+                                xStart = bX1;
+                            }
+
+                            if (xEnd > bX1 + renderW)
+                            {
+                                yEnd = y + h - (xEnd - (bX1 + renderW));
+                                xEnd = bX1 + renderW;
+                            }
+
+                            if (xEnd > xStart && yEnd > yStart)
+                            {
+                                idleHatchGeom.Children.Add(new LineGeometry
+                                {
+                                    StartPoint = new Point(xStart, yStart),
+                                    EndPoint = new Point(xEnd, yEnd)
+                                });
+                            }
+                        }
+                    }
+
+                    if (renderW >= 36 && textCount < maxTextElements && bX2 > 0 && bX1 < width)
+                    {
+                        double labelX = Math.Max(bX1 + 3, 2);
+                        double visibleRight = Math.Min(bX1 + renderW - 3, width - 2);
+                        double labelMaxWidth = Math.Max(0, visibleRight - labelX);
+
+                        if (labelMaxWidth >= 20 && block.Dominant is not null)
+                        {
+                            string labelText = $"{block.Dominant.Name} ({block.Dominant.DurationMs:N1} ms)";
+
+                            var label = new TextBlock
+                            {
+                                Text = labelText,
+                                FontSize = 10,
+                                Foreground = strokeBrush,
+                                TextTrimming = TextTrimming.CharacterEllipsis,
+                                IsHitTestVisible = false,
+                                MaxWidth = labelMaxWidth
+                            };
+                            pendingLabels.Add((label, labelX, y + 1));
+                            textCount++;
+                        }
+                    }
+                }
+            }
         }
 
         foreach (var ((depth, bucket), laneActs) in laneInstantMap)
@@ -1414,14 +1618,7 @@ public sealed partial class TimelineView : UserControl
                 if (double.IsNaN(x) || double.IsInfinity(x)) continue;
                 if (x < -5 || x > width + 5) continue;
 
-                if (x - lastTickX < 1.5) continue;
-                lastTickX = x;
-
-                targetTicksGeom.Children.Add(new RectangleGeometry
-                {
-                    Rect = new Rect(x - 1, y, 2, LaneHeight)
-                });
-
+                // Always add every instant event so each one can be individually hit-tested
                 visualItems.Add(new VisualHitItem
                 {
                     Lane = depth,
@@ -1434,20 +1631,64 @@ public sealed partial class TimelineView : UserControl
                     Dominant = act,
                     IsDuration = false
                 });
+
+                if (x - lastTickX < 1.5) continue;
+                lastTickX = x;
+
+                targetTicksGeom.Children.Add(new RectangleGeometry
+                {
+                    Rect = new Rect(x - 1, y, 2, LaneHeight)
+                });
             }
         }
 
         AddBatchShapePath(canvas, xamlDurationGeom, XamlFill, XamlBrush);
+        AddBatchShapePath(canvas, xamlClusterGeom, XamlBrush, XamlBrush);
         AddBatchShapePath(canvas, xamlTicksGeom, XamlBrush, XamlBrush);
         AddBatchShapePath(canvas, compDurationGeom, CompFill, CompBrush);
+        AddBatchShapePath(canvas, compClusterGeom, CompBrush, CompBrush);
         AddBatchShapePath(canvas, compTicksGeom, CompBrush, CompBrush);
         AddBatchShapePath(canvas, otherDurationGeom, OtherFill, OtherBrush);
+        AddBatchShapePath(canvas, otherClusterGeom, OtherBrush, OtherBrush);
         AddBatchShapePath(canvas, otherTicksGeom, OtherBrush, OtherBrush);
+        AddBatchShapePath(canvas, idleDurationGeom, IdleWaitFill, IdleWaitBrush);
+        AddBatchShapePath(canvas, idleClusterGeom, IdleWaitBrush, IdleWaitBrush);
+        AddBatchShapePath(canvas, idleHatchGeom, null, IdleWaitBrush);
 
-        if (selectedActivity is not null && selectedActivity.ThreadId == track.ThreadId)
+        foreach (var (lbl, left, top) in pendingLabels)
         {
-            var selItem = visualItems.FirstOrDefault(v => ReferenceEquals(v.Dominant, selectedActivity)
-                || (selectedActivity.EndMs >= v.StartMs && selectedActivity.StartMs <= v.EndMs && selectedActivity.Depth == v.Lane));
+            Canvas.SetLeft(lbl, left);
+            Canvas.SetTop(lbl, top);
+            Canvas.SetZIndex(lbl, 10);
+            canvas.Children.Add(lbl);
+        }
+
+        if (selectedLockRegion is not null && selectedLockRegion.ThreadId == track.ThreadId)
+        {
+            double rawX1 = (selectedLockRegion.StartMs - viewStartMs) * pxPerMs;
+            double rawX2 = (selectedLockRegion.EndMs - viewStartMs) * pxPerMs;
+            if (rawX2 >= 0 && rawX1 <= width)
+            {
+                double x1 = Math.Clamp(rawX1, -5, width + 5);
+                double x2 = Math.Clamp(rawX2, -5, width + 5);
+                double w = Math.Max(2.0, x2 - x1);
+                var highlight = new Border
+                {
+                    Width = Math.Clamp(w + 2, 2, width + 100),
+                    Height = height,
+                    BorderBrush = AttentionBrush,
+                    BorderThickness = new Thickness(1),
+                    IsHitTestVisible = false
+                };
+                Canvas.SetLeft(highlight, x1 - 1);
+                Canvas.SetTop(highlight, 0);
+                canvas.Children.Add(highlight);
+            }
+        }
+        else if (selectedActivity is not null && selectedActivity.ThreadId == track.ThreadId)
+        {
+            var selItem = visualItems.FirstOrDefault(v => ReferenceEquals(v.Dominant, selectedActivity))
+                ?? visualItems.FirstOrDefault(v => selectedActivity.EndMs >= v.StartMs && selectedActivity.StartMs <= v.EndMs && selectedActivity.Depth == v.Lane);
 
             if (selItem is not null)
             {
@@ -1466,7 +1707,7 @@ public sealed partial class TimelineView : UserControl
         }
     }
 
-    private static void AddBatchShapePath(Canvas canvas, GeometryGroup geometryGroup, Brush fill, Brush stroke)
+    private static void AddBatchShapePath(Canvas canvas, GeometryGroup geometryGroup, Brush? fill, Brush? stroke, DoubleCollection? strokeDashArray = null, double strokeThickness = 1.0)
     {
         if (geometryGroup.Children.Count == 0) return;
         var path = new ShapePath
@@ -1474,7 +1715,8 @@ public sealed partial class TimelineView : UserControl
             Data = geometryGroup,
             Fill = fill,
             Stroke = stroke,
-            StrokeThickness = 1,
+            StrokeThickness = strokeThickness,
+            StrokeDashArray = strokeDashArray,
             IsHitTestVisible = false
         };
         canvas.Children.Add(path);
@@ -1486,6 +1728,12 @@ public sealed partial class TimelineView : UserControl
 
     private void Tracks_ManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
     {
+        if (isPanning || overviewDrag != OverviewDragMode.None)
+        {
+            e.Handled = true;
+            return;
+        }
+
         double deltaX = e.Delta.Translation.X;
         if (Math.Abs(deltaX) > 0.001)
         {
@@ -1573,28 +1821,15 @@ public sealed partial class TimelineView : UserControl
             double width = canvas.ActualWidth;
             if (width <= 0) return;
 
-            double duration = panStartViewEnd - panStartViewStart;
+            double totalSpan = Math.Max(0.001, totalMaxMs - totalMinMs);
+            double duration = Math.Min(totalSpan, panStartViewEnd - panStartViewStart);
             double deltaMs = -(deltaX / width) * duration;
 
-            double minBound = totalMinMs;
-            double maxBound = totalMaxMs;
-
-            double newStart = panStartViewStart + deltaMs;
-            double newEnd = panStartViewEnd + deltaMs;
-
-            if (newStart < minBound)
-            {
-                newStart = minBound;
-                newEnd = minBound + duration;
-            }
-            if (newEnd > maxBound)
-            {
-                newEnd = maxBound;
-                newStart = Math.Max(minBound, maxBound - duration);
-            }
+            double maxStart = Math.Max(totalMinMs, totalMaxMs - duration);
+            double newStart = Math.Clamp(panStartViewStart + deltaMs, totalMinMs, maxStart);
 
             viewStartMs = newStart;
-            viewEndMs = newEnd;
+            viewEndMs = newStart + duration;
             RequestRender();
             e.Handled = true;
             return;
@@ -1644,20 +1879,16 @@ public sealed partial class TimelineView : UserControl
         double mouseX = clickPos.X;
         double mouseY = clickPos.Y;
 
-        VisualHitItem? bestItem = null;
-        double bestDist = double.MaxValue;
-
-        for (int i = 0; i < items.Count; i++)
+        if (ReferenceEquals(canvas, FramesCanvas))
         {
-            var item = items[i];
+            if (mouseY < 0 || mouseY > canvas.ActualHeight) return null;
 
-            if (ReferenceEquals(canvas, FramesCanvas))
+            VisualHitItem? bestItem = null;
+            double bestDist = double.MaxValue;
+
+            for (int i = 0; i < items.Count; i++)
             {
-                if (mouseY < 0 || mouseY > canvas.ActualHeight)
-                {
-                    continue;
-                }
-
+                var item = items[i];
                 if (mouseX >= item.X1 - 4 && mouseX <= item.X2 + 4)
                 {
                     double midX = (item.X1 + item.X2) / 2.0;
@@ -1669,24 +1900,89 @@ public sealed partial class TimelineView : UserControl
                     }
                 }
             }
-            else
+            return bestItem;
+        }
+
+        // Thread Track Canvas
+        double width = canvas.ActualWidth;
+        if (width <= 0) return null;
+
+        double duration = Math.Max(0.001, viewEndMs - viewStartMs);
+        double mouseMs = viewStartMs + (mouseX / width) * duration;
+
+        int hoveredDepth = (int)((mouseY - TrackTopPadding) / (LaneHeight + LaneSpacing));
+        VisualHitItem? bestExact = null;
+        VisualHitItem? bestNearby = null;
+        double bestDistPx = double.MaxValue;
+        double bestTimeDist = double.MaxValue;
+
+        if (hoveredDepth >= 0)
+        {
+            double laneTop = hoveredDepth * (LaneHeight + LaneSpacing) + TrackTopPadding;
+            if (mouseY >= laneTop && mouseY <= laneTop + LaneHeight)
             {
-                if (mouseY < item.Y || mouseY > item.Y + LaneHeight)
+                for (int i = 0; i < items.Count; i++)
                 {
-                    continue;
-                }
+                    var item = items[i];
+                    if (item.Lane != hoveredDepth) continue;
 
-                double left = item.IsDuration ? item.X1 : item.X1 - 2;
-                double right = item.IsDuration ? item.X2 : item.X2 + 2;
+                    // Direct timestamp hit for duration events
+                    if (item.IsDuration && mouseMs >= item.StartMs && mouseMs <= item.EndMs)
+                    {
+                        double span = item.EndMs - item.StartMs;
+                        if (span < bestTimeDist)
+                        {
+                            bestTimeDist = span;
+                            bestExact = item;
+                        }
+                        continue;
+                    }
 
-                if (mouseX >= left && mouseX <= right)
-                {
-                    return item;
+                    if (bestExact is not null) continue;
+
+                    double left = item.IsDuration ? item.X1 : item.X1 - 2;
+                    double right = item.IsDuration ? item.X2 : item.X2 + 2;
+
+                    if (mouseX >= left && mouseX <= right)
+                    {
+                        double midX = (item.X1 + item.X2) / 2.0;
+                        double dist = Math.Abs(mouseX - midX);
+                        if (dist < bestDistPx)
+                        {
+                            bestDistPx = dist;
+                            bestNearby = item;
+                        }
+                    }
+                    else if (bestNearby is null && mouseX >= left - 2 && mouseX <= right + 2)
+                    {
+                        double midX = (item.X1 + item.X2) / 2.0;
+                        double dist = Math.Abs(mouseX - midX);
+                        if (dist < bestDistPx)
+                        {
+                            bestDistPx = dist;
+                            bestNearby = item;
+                        }
+                    }
                 }
             }
         }
 
-        return bestItem;
+        var result = bestExact ?? bestNearby;
+        if (result is not null) return result;
+
+        if (showLockRegions)
+        {
+            for (int i = 0; i < items.Count; i++)
+            {
+                var it = items[i];
+                if (it.LockRegion is not null && mouseMs >= it.StartMs && mouseMs <= it.EndMs)
+                {
+                    return it;
+                }
+            }
+        }
+
+        return null;
     }
 
     private void UpdateHover(Canvas canvas, PointerRoutedEventArgs e)
@@ -1715,7 +2011,20 @@ public sealed partial class TimelineView : UserControl
         {
             var transform = canvas.TransformToVisual(HoverOverlayCanvas);
 
-            if (ReferenceEquals(canvas, FramesCanvas))
+            if (item.LockRegion is not null)
+            {
+                var overlayTop = transform.TransformPoint(new Point(item.X1, 0));
+                double w = Math.Max(2.0, item.X2 - item.X1);
+                double trackH = canvas.ActualHeight > 0 ? canvas.ActualHeight : 44;
+
+                Canvas.SetLeft(HoverHighlight, overlayTop.X - 1);
+                Canvas.SetTop(HoverHighlight, overlayTop.Y);
+                HoverHighlight.Width = w + 2;
+                HoverHighlight.Height = trackH;
+                HoverHighlight.Background = null;
+                HoverHighlight.BorderThickness = new Thickness(1);
+            }
+            else if (ReferenceEquals(canvas, FramesCanvas))
             {
                 var overlayTop = transform.TransformPoint(new Point(item.X1, 0));
                 double markerW = item.X2 - item.X1;
@@ -1726,6 +2035,7 @@ public sealed partial class TimelineView : UserControl
                 HoverHighlight.Width = markerW;
                 HoverHighlight.Height = trackH;
                 HoverHighlight.Background = HoverHighlight.BorderBrush;
+                HoverHighlight.BorderThickness = new Thickness(0);
             }
             else
             {
@@ -1736,101 +2046,123 @@ public sealed partial class TimelineView : UserControl
                 HoverHighlight.Width = w + 2;
                 HoverHighlight.Height = LaneHeight + 2;
                 HoverHighlight.Background = null;
+                HoverHighlight.BorderThickness = new Thickness(1);
             }
             HoverHighlight.Visibility = Visibility.Visible;
 
-            var act = item.Dominant;
-            HoverTitle.Text = act.IsDuration ? CleanSpanEventName(act.Name) : act.Name;
-            if (act.IsFrameRequest)
+            if (item.LockRegion is not null)
             {
-                if (act.IsDelayedFrameRequest)
-                {
-                    HoverBucketText.Text = "Frame Request (Delayed)";
-                    HoverBucketBadge.Background = FrameRequestDelayedBrush;
-                }
-                else
+                var lockReg = item.LockRegion;
+                HoverTitle.Text = lockReg.Name;
+                HoverBucketText.Text = "Lock Region";
+                HoverBucketBadge.Background = LockSpanBrush;
+                HoverDuration.Text = $"Lock Held: {lockReg.DurationMs:N3} ms";
+                HoverTimeSpan.Text = $"{lockReg.StartMs:N2} ms → {lockReg.EndMs:N2} ms";
+                HoverMetaThread.Text = $"Thread: {lockReg.ThreadId}";
+                HoverMetaProvider.Text = lockReg.Provider.ToString();
+            }
+            else if (item.Dominant is not null)
+            {
+                var act = item.Dominant;
+                HoverTitle.Text = act.IsDuration ? CleanSpanEventName(act.Name) : act.Name;
+                if (act.IsFrameRequest)
                 {
                     HoverBucketText.Text = "Frame Request";
                     HoverBucketBadge.Background = FrameRequestBrush;
                 }
-            }
-            else if (act.IsFrameCommit)
-            {
-                HoverBucketText.Text = "Frame Commit";
-                HoverBucketBadge.Background = FrameCommitBrush;
-            }
-            else
-            {
-                HoverBucketText.Text = act.Bucket;
-                HoverBucketBadge.Background = act.Bucket switch
+                else if (act.IsFrameCommit)
                 {
-                    "Xaml" => XamlBrush,
-                    "Composition" => CompBrush,
-                    _ => OtherBrush
-                };
-            }
+                    if (act.IsDelayedFrameCommit)
+                    {
+                        HoverBucketText.Text = "Frame Commit (Delayed)";
+                        HoverBucketBadge.Background = FrameCommitDelayedBrush;
+                    }
+                    else
+                    {
+                        HoverBucketText.Text = "Frame Commit";
+                        HoverBucketBadge.Background = FrameCommitBrush;
+                    }
+                }
+                else if (act.IsSchedulerWait || act.Bucket == "Idle")
+                {
+                    HoverBucketText.Text = "Idle / Wait";
+                    HoverBucketBadge.Background = IdleWaitBrush;
+                }
+                else
+                {
+                    HoverBucketText.Text = act.Bucket;
+                    HoverBucketBadge.Background = act.Bucket switch
+                    {
+                        "Xaml" => XamlBrush,
+                        "Composition" => CompBrush,
+                        _ => OtherBrush
+                    };
+                }
 
-            if (act.IsFrameCommit)
-            {
-                double commitTime = act.IsDuration ? act.EndMs : act.StartMs;
-                if (act.FrameLatencyMs.HasValue)
+                if (act.IsFrameCommit)
                 {
-                    HoverDuration.Text = $"Latency: {act.FrameLatencyMs.Value:N2} ms" + (act.IsDuration ? $" (Commit: {act.DurationMs:N2} ms)" : "");
-                    HoverTimeSpan.Text = $"Req: {act.FrameRequestMs!.Value:N2} ms → Commit: {commitTime:N2} ms";
+                    double commitTime = act.IsDuration ? act.EndMs : act.StartMs;
+                    if (act.FrameLatencyMs.HasValue)
+                    {
+                        string delayedStatus = act.IsDelayedFrameCommit ? "Delayed (> 16.66 ms)" : "On Time";
+                        HoverDuration.Text = $"Latency: {act.FrameLatencyMs.Value:N2} ms ({delayedStatus})" + (act.IsDuration ? $" (Commit: {act.DurationMs:N2} ms)" : "");
+                        HoverTimeSpan.Text = $"Req: {act.FrameRequestMs!.Value:N2} ms → Commit: {commitTime:N2} ms";
+                    }
+                    else
+                    {
+                        HoverDuration.Text = act.IsDuration ? $"Commit: {act.DurationMs:N2} ms" : "Frame Commit";
+                        HoverTimeSpan.Text = $"@ {commitTime:N2} ms";
+                    }
+                }
+                else if (act.IsFrameRequest)
+                {
+                    if (act.FrameCommitMs.HasValue && act.FrameLatencyMs.HasValue)
+                    {
+                        HoverDuration.Text = $"Latency to Commit: {act.FrameLatencyMs.Value:N2} ms";
+                        HoverTimeSpan.Text = $"Req: {act.StartMs:N2} ms → Commit: {act.FrameCommitMs.Value:N2} ms";
+                    }
+                    else
+                    {
+                        HoverDuration.Text = "Queued Frame Request";
+                        HoverTimeSpan.Text = $"@ {act.StartMs:N2} ms";
+                    }
+                }
+                else if (item.IsDuration)
+                {
+                    if (item.ClusterCount > 1)
+                    {
+                        double totalSpanMs = Math.Max(0.001, item.EndMs - item.StartMs);
+                        HoverDuration.Text = $"{totalSpanMs:N2} ms (cluster span)";
+                        HoverTimeSpan.Text = $"{item.StartMs:N2} ms → {item.EndMs:N2} ms (+{item.ClusterCount - 1} other events; zoom in for details)";
+                    }
+                    else
+                    {
+                        HoverDuration.Text = $"{act.DurationMs:N3} ms";
+                        HoverTimeSpan.Text = $"{act.StartMs:N2} ms → {act.EndMs:N2} ms";
+                    }
                 }
                 else
                 {
-                    HoverDuration.Text = act.IsDuration ? $"Commit: {act.DurationMs:N2} ms" : "Frame Commit";
-                    HoverTimeSpan.Text = $"@ {commitTime:N2} ms";
-                }
-            }
-            else if (act.IsFrameRequest)
-            {
-                if (act.FrameCommitMs.HasValue && act.FrameLatencyMs.HasValue)
-                {
-                    HoverDuration.Text = act.IsDelayedFrameRequest
-                        ? $"Delayed: {act.FrameLatencyMs.Value:N2} ms (> 16.66 ms)"
-                        : $"Fulfilled in {act.FrameLatencyMs.Value:N2} ms";
-                    HoverTimeSpan.Text = $"Req: {act.StartMs:N2} ms → Commit: {act.FrameCommitMs.Value:N2} ms";
-                }
-                else
-                {
-                    HoverDuration.Text = "Unfulfilled Request (> 16.66 ms)";
+                    HoverDuration.Text = "Instant event";
                     HoverTimeSpan.Text = $"@ {act.StartMs:N2} ms";
                 }
-            }
-            else if (item.IsDuration)
-            {
-                if (item.ClusterCount > 1)
-                {
-                    double totalSpanMs = Math.Max(0.001, item.EndMs - item.StartMs);
-                    HoverDuration.Text = $"{totalSpanMs:N2} ms (cluster span)";
-                    HoverTimeSpan.Text = $"{item.StartMs:N2} ms → {item.EndMs:N2} ms (+{item.ClusterCount - 1} other events; zoom in for details)";
-                }
-                else
-                {
-                    HoverDuration.Text = $"{act.DurationMs:N3} ms";
-                    HoverTimeSpan.Text = $"{act.StartMs:N2} ms → {act.EndMs:N2} ms";
-                }
-            }
-            else
-            {
-                HoverDuration.Text = "Instant event";
-                HoverTimeSpan.Text = $"@ {act.StartMs:N2} ms";
-            }
 
-            HoverMetaThread.Text = $"Thread: {act.ThreadId}";
-            HoverMetaProvider.Text = act.Provider.ToString();
+                HoverMetaThread.Text = $"Thread: {act.ThreadId}";
+                HoverMetaProvider.Text = act.Provider.ToString();
+            }
 
             var pointerInOverlay = e.GetCurrentPoint(HoverOverlayCanvas).Position;
-            double cardX = pointerInOverlay.X + 16;
-            double cardY = pointerInOverlay.Y + 16;
-
             double overlayW = HoverOverlayCanvas.ActualWidth;
             double overlayH = HoverOverlayCanvas.ActualHeight;
 
-            const double estCardW = 320;
-            const double estCardH = 80;
+            HoverCard.Measure(new Windows.Foundation.Size(360, double.PositiveInfinity));
+            double cardW = Math.Max(HoverCard.DesiredSize.Width, HoverCard.ActualWidth);
+            if (cardW <= 0) cardW = 280;
+            double cardH = Math.Max(HoverCard.DesiredSize.Height, HoverCard.ActualHeight);
+            if (cardH <= 0) cardH = 80;
+
+            double cardX = pointerInOverlay.X + 16;
+            double cardY = pointerInOverlay.Y + 16;
 
             double rightLimit = overlayW - 8;
             if (InspectorBorder is not null && InspectorBorder.Visibility == Visibility.Visible && InspectorBorder.ActualWidth > 0)
@@ -1838,13 +2170,22 @@ public sealed partial class TimelineView : UserControl
                 rightLimit = Math.Max(8, overlayW - InspectorBorder.ActualWidth - 12);
             }
 
-            if (overlayW > 0 && cardX + estCardW > rightLimit)
+            if (overlayW > 0 && cardX + cardW > rightLimit)
             {
-                cardX = Math.Max(8, pointerInOverlay.X - estCardW - 12);
+                cardX = pointerInOverlay.X - cardW - 16;
             }
-            if (overlayH > 0 && cardY + estCardH > overlayH - 8)
+            if (cardX < 8)
             {
-                cardY = Math.Max(8, pointerInOverlay.Y - estCardH - 12);
+                cardX = 8;
+            }
+
+            if (overlayH > 0 && cardY + cardH > overlayH - 8)
+            {
+                cardY = pointerInOverlay.Y - cardH - 16;
+            }
+            if (cardY < 8)
+            {
+                cardY = 8;
             }
 
             Canvas.SetLeft(HoverCard, cardX);
@@ -1869,6 +2210,7 @@ public sealed partial class TimelineView : UserControl
         {
             HoverHighlight.Visibility = Visibility.Collapsed;
             HoverHighlight.Background = null;
+            HoverHighlight.BorderThickness = new Thickness(1);
         }
         if (!isPanning && overviewDrag == OverviewDragMode.None)
         {
@@ -1881,10 +2223,46 @@ public sealed partial class TimelineView : UserControl
         var item = FindVisualItemAtPoint(canvas, clickPos);
         if (item is not null)
         {
+            if (item.LockRegion is not null)
+            {
+                selectedActivity = null;
+                selectedLockRegion = item.LockRegion;
+                ShowLockRegionDetails(item.LockRegion);
+                RenderAll();
+                return;
+            }
+
+            selectedLockRegion = null;
             selectedActivity = item.Dominant;
-            ShowActivityDetails(item.Dominant);
+            if (item.Dominant is not null)
+            {
+                ShowActivityDetails(item.Dominant);
+            }
             RenderAll();
         }
+    }
+
+    private void ShowLockRegionDetails(TimelineLockRegion lockReg)
+    {
+        HideHover();
+        InspectorBorder.Visibility = Visibility.Visible;
+        DetailBucketText.Text = "Lock Region";
+        DetailBucketBadge.Background = LockSpanBrush;
+        DetailTitleText.Text = lockReg.Name;
+        DetailDurationText.Text = $"Lock Held: {lockReg.DurationMs:N3} ms";
+        DetailMetaText.Text = $"Start: {lockReg.StartMs:N3} ms | End: {lockReg.EndMs:N3} ms | Thread: {lockReg.ThreadId} | Provider: {lockReg.Provider}";
+        DetailFieldsText.Text = $"Compositor Lock held for {lockReg.DurationMs:N3} ms on thread {lockReg.ThreadId}.\nStart Seq: {lockReg.StartSeq}\nEnd Seq: {lockReg.EndSeq}";
+        DetailObjectsList.ItemsSource = null;
+    }
+
+    private void ShowLockRegionsToggle_Click(object sender, RoutedEventArgs e)
+    {
+        showLockRegions = ShowLockRegionsToggle.IsChecked;
+        if (LockRegionLegendItem is not null)
+        {
+            LockRegionLegendItem.Opacity = showLockRegions ? 1.0 : 0.4;
+        }
+        RenderAll();
     }
 
     private void TimelineView_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -1967,26 +2345,14 @@ public sealed partial class TimelineView : UserControl
     private void PanByDeltaMs(double delta)
     {
         HideHover();
-        double duration = viewEndMs - viewStartMs;
-        double minBound = totalMinMs;
-        double maxBound = totalMaxMs;
+        double totalSpan = Math.Max(0.001, totalMaxMs - totalMinMs);
+        double duration = Math.Min(totalSpan, viewEndMs - viewStartMs);
+        double maxStart = Math.Max(totalMinMs, totalMaxMs - duration);
 
-        double newStart = viewStartMs + delta;
-        double newEnd = viewEndMs + delta;
-
-        if (newStart < minBound)
-        {
-            newStart = minBound;
-            newEnd = minBound + duration;
-        }
-        if (newEnd > maxBound)
-        {
-            newEnd = maxBound;
-            newStart = Math.Max(minBound, maxBound - duration);
-        }
+        double newStart = Math.Clamp(viewStartMs + delta, totalMinMs, maxStart);
 
         viewStartMs = newStart;
-        viewEndMs = newEnd;
+        viewEndMs = newStart + duration;
         RequestRender();
     }
 
@@ -2031,21 +2397,31 @@ public sealed partial class TimelineView : UserControl
 
         if (activity.IsFrameRequest)
         {
-            if (activity.IsDelayedFrameRequest)
-            {
-                DetailBucketText.Text = "Frame Request (Delayed)";
-                DetailBucketBadge.Background = FrameRequestDelayedBrush;
-            }
-            else
-            {
-                DetailBucketText.Text = "Frame Request";
-                DetailBucketBadge.Background = FrameRequestBrush;
-            }
+            DetailBucketText.Text = "Frame Request";
+            DetailBucketBadge.Background = FrameRequestBrush;
         }
         else if (activity.IsFrameCommit)
         {
-            DetailBucketText.Text = "Frame Commit";
-            DetailBucketBadge.Background = FrameCommitBrush;
+            if (activity.IsDelayedFrameCommit)
+            {
+                DetailBucketText.Text = "Frame Commit (Delayed)";
+                DetailBucketBadge.Background = FrameCommitDelayedBrush;
+            }
+            else
+            {
+                DetailBucketText.Text = "Frame Commit";
+                DetailBucketBadge.Background = FrameCommitBrush;
+            }
+        }
+        else if (activity.IsLock)
+        {
+            DetailBucketText.Text = "Lock";
+            DetailBucketBadge.Background = LockSpanBrush;
+        }
+        else if (activity.IsSchedulerWait || activity.Bucket == "Idle")
+        {
+            DetailBucketText.Text = "Idle / Wait";
+            DetailBucketBadge.Background = IdleWaitBrush;
         }
         else
         {
@@ -2066,7 +2442,8 @@ public sealed partial class TimelineView : UserControl
             double commitTime = activity.IsDuration ? activity.EndMs : activity.StartMs;
             if (activity.FrameLatencyMs.HasValue)
             {
-                DetailDurationText.Text = $"Frame Latency: {activity.FrameLatencyMs.Value:N3} ms" + (activity.IsDuration ? $" (Commit Duration: {activity.DurationMs:N3} ms)" : "");
+                string status = activity.IsDelayedFrameCommit ? "Delayed (> 16.66 ms)" : "On Time (<= 16.66 ms)";
+                DetailDurationText.Text = $"Frame Latency: {activity.FrameLatencyMs.Value:N3} ms ({status})" + (activity.IsDuration ? $" (Commit Duration: {activity.DurationMs:N3} ms)" : "");
                 DetailMetaText.Text = $"Request: {activity.FrameRequestMs!.Value:N3} ms | Commit: {commitTime:N3} ms | Thread: {activity.ThreadId} | Provider: {activity.Provider}";
             }
             else
@@ -2079,16 +2456,19 @@ public sealed partial class TimelineView : UserControl
         {
             if (activity.FrameCommitMs.HasValue && activity.FrameLatencyMs.HasValue)
             {
-                DetailDurationText.Text = activity.IsDelayedFrameRequest
-                    ? $"Delayed Fulfillment: {activity.FrameLatencyMs.Value:N3} ms (> 16.66 ms)"
-                    : $"Fulfilled: {activity.FrameLatencyMs.Value:N3} ms (<= 16.66 ms)";
+                DetailDurationText.Text = $"Latency to Commit: {activity.FrameLatencyMs.Value:N3} ms";
                 DetailMetaText.Text = $"Request: {activity.StartMs:N3} ms | Commit: {activity.FrameCommitMs.Value:N3} ms | Thread: {activity.ThreadId} | Provider: {activity.Provider}";
             }
             else
             {
-                DetailDurationText.Text = "Unfulfilled Frame Request (> 16.66 ms)";
+                DetailDurationText.Text = "Queued Frame Request";
                 DetailMetaText.Text = $"Request: {activity.StartMs:N3} ms | Thread: {activity.ThreadId} | Provider: {activity.Provider}";
             }
+        }
+        else if (activity.IsLock)
+        {
+            DetailDurationText.Text = activity.IsDuration ? $"Lock Held: {activity.DurationMs:N3} ms" : "Lock Event (Instant)";
+            DetailMetaText.Text = $"Timestamp: {activity.StartMs:N3} ms | Thread: {activity.ThreadId} | Provider: {activity.Provider}";
         }
         else
         {
@@ -2127,18 +2507,18 @@ public sealed partial class TimelineView : UserControl
             if (activity.IsFrameCommit && activity.FrameLatencyMs.HasValue)
             {
                 double commitTime = activity.IsDuration ? activity.EndMs : activity.StartMs;
-                detailsText = $"Frame Latency: {activity.FrameLatencyMs.Value:N3} ms (Oldest Request: {activity.FrameRequestMs!.Value:N3} ms → Commit: {commitTime:N3} ms)\n\n" + detailsText;
+                string status = activity.IsDelayedFrameCommit ? "DELAYED (> 16.66 ms)" : "ON TIME (<= 16.66 ms)";
+                detailsText = $"Frame Latency: {activity.FrameLatencyMs.Value:N3} ms [{status}] (Oldest Request: {activity.FrameRequestMs!.Value:N3} ms → Commit: {commitTime:N3} ms)\n\n" + detailsText;
             }
             else if (activity.IsFrameRequest)
             {
                 if (activity.FrameCommitMs.HasValue && activity.FrameLatencyMs.HasValue)
                 {
-                    string status = activity.IsDelayedFrameRequest ? "DELAYED (> 16.66 ms)" : "OK (<= 16.66 ms)";
-                    detailsText = $"Fulfillment: {status} - {activity.FrameLatencyMs.Value:N3} ms (Req: {activity.StartMs:N3} ms → Commit: {activity.FrameCommitMs.Value:N3} ms)\n\n" + detailsText;
+                    detailsText = $"Commit fulfillment in {activity.FrameLatencyMs.Value:N3} ms (Req: {activity.StartMs:N3} ms → Commit: {activity.FrameCommitMs.Value:N3} ms)\n\n" + detailsText;
                 }
                 else
                 {
-                    detailsText = "Fulfillment: UNFULFILLED (> 16.66 ms)\n\n" + detailsText;
+                    detailsText = "Frame Request queued (unfulfilled commit in trace)\n\n" + detailsText;
                 }
             }
 

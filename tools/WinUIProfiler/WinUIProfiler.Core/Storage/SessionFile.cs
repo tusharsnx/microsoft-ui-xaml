@@ -472,14 +472,47 @@ public static class SessionFile
         using var transaction = connection.BeginTransaction(deferred: true);
         var (info, frequency, startQpc) = ReadSession(connection, transaction);
         var start = startQpc.GetValueOrDefault();
-        using var command = Command(connection, transaction, """
+
+        // Find which TypeIds have an "IsStart" field and at which index in the payload
+        var isStartIndices = new Dictionary<long, int>();
+        using (var typeCmd = Command(connection, transaction, """
+            SELECT TypeId, FieldNames FROM EventTypes
+            WHERE FieldNames LIKE '%IsStart%'
+            """))
+        using (var typeReader = typeCmd.ExecuteReader())
+        {
+            while (typeReader.Read())
+            {
+                var typeId = typeReader.GetInt64(0);
+                var fieldNames = typeReader.GetString(1).Split(',');
+                var idx = Array.IndexOf(fieldNames, "IsStart");
+                if (idx >= 0)
+                {
+                    isStartIndices[typeId] = idx;
+                }
+            }
+        }
+
+        string isStartSql;
+        if (isStartIndices.Count == 0)
+        {
+            isStartSql = "NULL AS IsStart";
+        }
+        else
+        {
+            var cases = string.Join(" ", isStartIndices.Select(kv => $"WHEN e.TypeId = {kv.Key} THEN json_extract(e.Payload, '$[{kv.Value}]')"));
+            isStartSql = $"CASE {cases} ELSE NULL END AS IsStart";
+        }
+
+        using var command = Command(connection, transaction, $"""
             SELECT e.Seq, e.Qpc, e.ThreadId, t.Name, t.Provider, t.Opcode,
                    COALESCE(r.Bucket,
                        CASE
                            WHEN t.Provider = 'Xaml' THEN 'Xaml'
                            WHEN t.Provider = 'DirectComposition' THEN 'Composition'
                            ELSE 'Other'
-                       END) AS Bucket
+                       END) AS Bucket,
+                   {isStartSql}
             FROM Events e
             JOIN EventTypes t ON t.TypeId = e.TypeId
             LEFT JOIN FrameEvents r ON r.Seq = e.Seq
@@ -497,6 +530,28 @@ public static class SessionFile
             {
                 provider = XamlProvider.Xaml;
             }
+
+            int isStartVal = -1;
+            if (!reader.IsDBNull(7))
+            {
+                var rawVal = reader.GetValue(7);
+                if (rawVal is bool b)
+                {
+                    isStartVal = b ? 1 : 0;
+                }
+                else
+                {
+                    try
+                    {
+                        isStartVal = Convert.ToInt32(rawVal);
+                    }
+                    catch
+                    {
+                        isStartVal = -1;
+                    }
+                }
+            }
+
             list.Add(new(
                 reader.GetInt64(0),
                 ms,
@@ -504,7 +559,8 @@ public static class SessionFile
                 reader.GetString(3),
                 provider,
                 reader.GetInt32(5),
-                reader.GetString(6)
+                reader.GetString(6),
+                isStartVal
             ));
         }
         return list;
@@ -566,7 +622,7 @@ public static class SessionFile
                 int tid = reader.GetInt32(0);
                 if (!threads.ContainsKey(tid))
                 {
-                    threads[tid] = new(tid, "Render", "Render Thread");
+                    threads[tid] = new(tid, "Render", "Compositor Scheduler");
                     break;
                 }
             }
