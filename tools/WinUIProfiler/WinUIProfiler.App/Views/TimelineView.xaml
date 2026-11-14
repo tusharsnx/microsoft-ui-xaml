@@ -87,8 +87,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" /> <!-- Toolbar -->
             <RowDefinition Height="Auto" /> <!-- Overview Panel -->
-            <RowDefinition Height="Auto" /> <!-- Ruler -->
-            <RowDefinition Height="*" />    <!-- Tracks -->
+            <RowDefinition Height="*" />    <!-- Tracks & Ruler (Unified 2D ScrollView) -->
         </Grid.RowDefinitions>
 
         <!-- 0: Toolbar -->
@@ -250,52 +249,77 @@
             </Grid>
         </Border>
 
-        <!-- 2: Ruler -->
-        <Border Grid.Row="2" Height="24" Background="{ThemeResource RulerBackgroundBrush}" CornerRadius="4">
-            <Canvas x:Name="RulerCanvas" Background="Transparent" SizeChanged="RulerCanvas_SizeChanged"
-                    ManipulationMode="TranslateX,TranslateInertia"
-                    ManipulationDelta="Tracks_ManipulationDelta"
-                    PointerWheelChanged="Ruler_PointerWheelChanged" />
-        </Border>
+        <!-- 2: Tracks & Ruler -->
+        <Grid Grid.Row="2">
+            <ScrollView x:Name="TracksScrollView"
+                        ContentOrientation="Vertical"
+                        HorizontalScrollBarVisibility="Hidden"
+                        HorizontalScrollMode="Disabled"
+                        VerticalScrollBarVisibility="Auto"
+                        VerticalScrollMode="Enabled"
+                        PointerWheelChanged="Tracks_PointerWheelChanged"
+                        ViewChanged="TracksScrollView_ViewChanged">
+                <Grid x:Name="TimelineContentGrid" HorizontalAlignment="Stretch" VerticalAlignment="Top">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" /> <!-- Row 0: Sticky Ruler Row -->
+                        <RowDefinition Height="*" />    <!-- Row 1: Tracks Panel -->
+                    </Grid.RowDefinitions>
 
-        <!-- 3: Tracks Container -->
-        <Grid Grid.Row="3">
-            <ScrollViewer x:Name="TracksScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                <StackPanel x:Name="TracksPanel" Spacing="4"
-                            ManipulationMode="System,TranslateX,TranslateInertia"
-                            ManipulationDelta="Tracks_ManipulationDelta"
-                            PointerWheelChanged="Tracks_PointerWheelChanged">
-                    <!-- Track 0: Frames (Requests & Commits) -->
-                    <Grid x:Name="FramesTrackContainer">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,2" VerticalAlignment="Center">
-                            <Rectangle Width="4" Height="14" Fill="{ThemeResource FrameCommitMarkerBrush}" RadiusX="2" RadiusY="2" />
-                            <TextBlock Text="Frames (Requests &amp; Commits)" FontWeight="SemiBold" FontSize="12" />
-                            <TextBlock x:Name="FramesCountText" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </StackPanel>
-                        <Border Grid.Row="1" x:Name="FramesTrackBorder" Height="36" MinHeight="36" MaxHeight="36"
-                                Background="{ThemeResource TrackBackgroundBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
-                            <Canvas x:Name="FramesCanvas"
-                                    Height="34"
-                                    Background="Transparent"
-                                    PointerWheelChanged="Tracks_PointerWheelChanged"
-                                    SizeChanged="TrackCanvas_SizeChanged"
-                                    PointerPressed="Track_PointerPressed"
-                                    PointerMoved="Track_PointerMoved"
-                                    PointerReleased="Track_PointerReleased"
-                                    PointerCaptureLost="Track_PointerCaptureLost"
-                                    PointerExited="Track_PointerExited" />
+                    <!-- Sticky Ruler Row Container (Pinned in Y) -->
+                    <Grid x:Name="RulerRowContainer" Grid.Row="0" Canvas.ZIndex="30"
+                          Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+                        <!-- Ruler Canvas Border (Pinned in Y, Scrolls in X) -->
+                        <Border x:Name="RulerBorder"
+                                Height="24" Background="{ThemeResource RulerBackgroundBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1"
+                                CornerRadius="4">
+                            <Canvas x:Name="RulerCanvas" Background="Transparent"
+                                    Height="24"
+                                    SizeChanged="RulerCanvas_SizeChanged"
+                                    PointerWheelChanged="Ruler_PointerWheelChanged" />
                         </Border>
                     </Grid>
 
-                    <!-- Dynamic Thread Tracks -->
-                    <StackPanel x:Name="ThreadTracksPanel" Spacing="6" />
-                </StackPanel>
-            </ScrollViewer>
+                    <!-- Tracks Panel (Row 1) -->
+                    <StackPanel x:Name="TracksPanel" Grid.Row="1" Spacing="6" Margin="0,4,0,0">
+                        <!-- Track 0: Frames (Requests & Commits) -->
+                        <Grid x:Name="FramesTrackContainer">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Border x:Name="FramesHeaderBorder" Grid.Row="0"
+                                    Padding="4,2" HorizontalAlignment="Left" Canvas.ZIndex="10">
+                                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                    <Rectangle Width="4" Height="14" Fill="{ThemeResource FrameCommitMarkerBrush}" RadiusX="2" RadiusY="2" />
+                                    <TextBlock Text="Frames (Requests &amp; Commits)" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock x:Name="FramesCountText" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border x:Name="FramesTrackBorder" Grid.Row="1"
+                                    Height="36" MinHeight="36" MaxHeight="36"
+                                    Background="{ThemeResource TrackBackgroundBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
+                                <Canvas x:Name="FramesCanvas"
+                                        Height="34"
+                                        Background="Transparent"
+                                        PointerWheelChanged="Tracks_PointerWheelChanged"
+                                        SizeChanged="TrackCanvas_SizeChanged"
+                                        PointerPressed="Track_PointerPressed"
+                                        PointerMoved="Track_PointerMoved"
+                                        PointerReleased="Track_PointerReleased"
+                                        PointerCaptureLost="Track_PointerCaptureLost"
+                                        PointerExited="Track_PointerExited" />
+                            </Border>
+                        </Grid>
+
+                        <!-- Dynamic Thread Tracks -->
+                        <StackPanel x:Name="ThreadTracksPanel" Spacing="6" />
+                    </StackPanel>
+                </Grid>
+            </ScrollView>
 
             <!-- Floating Hover Card Overlay -->
             <Canvas x:Name="HoverOverlayCanvas" IsHitTestVisible="False">
@@ -456,7 +480,7 @@
         </Grid>
 
         <!-- Empty / Status State -->
-        <Border x:Name="StatusNoticeBorder" Grid.Row="2" Grid.RowSpan="2"
+        <Border x:Name="StatusNoticeBorder" Grid.Row="2"
                 HorizontalAlignment="Center" VerticalAlignment="Center"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"

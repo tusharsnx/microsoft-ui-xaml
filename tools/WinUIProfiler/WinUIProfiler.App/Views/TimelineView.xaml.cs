@@ -2,12 +2,16 @@
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
 using System.Globalization;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using Microsoft.UI;
+using Microsoft.UI.Composition;
+using Microsoft.UI.Composition.Interactions;
 using Microsoft.UI.Input;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -22,7 +26,7 @@ using ShapePath = Microsoft.UI.Xaml.Shapes.Path;
 
 namespace WinUIProfiler.App.Views;
 
-public sealed partial class TimelineView : UserControl
+public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
 {
     private const int OverviewBins = 150;
     private const double LaneHeight = 18;
@@ -76,6 +80,7 @@ public sealed partial class TimelineView : UserControl
         public bool IsCollapsed { get; set; }
 
         public Grid Container { get; set; } = null!;
+        public Border HeaderBorder { get; set; } = null!;
         public Border Border { get; set; } = null!;
         public Canvas Canvas { get; set; } = null!;
         public FontIcon ChevronIcon { get; set; } = null!;
@@ -96,7 +101,6 @@ public sealed partial class TimelineView : UserControl
     private TimelineLockRegion? selectedLockRegion;
     private double totalMinMs;
     private double totalMaxMs;
-    private bool renderPending;
 
     // Viewport & Selection state
     private double viewStartMs;
@@ -105,8 +109,15 @@ public sealed partial class TimelineView : UserControl
     // Interaction states
     private bool isPanning;
     private Point panStartPoint;
-    private double panStartViewStart;
-    private double panStartViewEnd;
+    private Point panLastPoint;
+    private double panStartVOffset;
+
+    private double pxPerMs = 1.0;
+
+    private ExpressionAnimation? pinYAnimation;
+    private InteractionTracker? horizontalTracker;
+    private VisualInteractionSource? visualInteractionSource;
+    private float lastTrackerX;
 
     private enum OverviewDragMode { None, NewRange, LeftHandle, RightHandle, WindowBody }
     private OverviewDragMode overviewDrag = OverviewDragMode.None;
@@ -136,22 +147,29 @@ public sealed partial class TimelineView : UserControl
 
     public event EventHandler<ObjectMention>? ObjectRequested;
 
-    private double lockedVerticalOffset = 0;
-    private bool isHandlingHorizontalPan = false;
-
     public TimelineView()
     {
         InitializeComponent();
-        TracksScrollViewer.ViewChanged += (_, _) =>
+        Loaded += (_, _) =>
         {
-            HideHover();
-            if (isHandlingHorizontalPan && Math.Abs(TracksScrollViewer.VerticalOffset - lockedVerticalOffset) > 0.5)
+            EnsurePinningAnimations();
+            if (allActivities.Count > 0)
             {
-                TracksScrollViewer.ChangeView(null, lockedVerticalOffset, null, disableAnimation: true);
+                ResetToFullExtent();
             }
-            else if (!isHandlingHorizontalPan)
+        };
+        SizeChanged += (_, _) =>
+        {
+            if (allActivities.Count > 0)
             {
-                lockedVerticalOffset = TracksScrollViewer.VerticalOffset;
+                if (viewEndMs - viewStartMs >= totalMaxMs - totalMinMs - 0.1)
+                {
+                    ResetToFullExtent();
+                }
+                else
+                {
+                    ApplyVisibleRange(viewStartMs, viewEndMs);
+                }
             }
         };
         SetEmptyState(true, Text("TimelineEmptyNotice"));
@@ -303,10 +321,10 @@ public sealed partial class TimelineView : UserControl
             selectedActivity = null;
 
             SetEmptyState(false);
+            EnsurePinningAnimations();
             UpdateTrackHeights();
+            ResetToFullExtent();
             UpdateOverviewGraph();
-            UpdateOverviewSelection();
-            RenderAll();
         }
         catch (OperationCanceledException)
         {
@@ -316,6 +334,181 @@ public sealed partial class TimelineView : UserControl
         {
             System.Diagnostics.Trace.TraceError($"[TimelineView.LoadSession] {ex}");
             SetEmptyState(true, $"Failed to load timeline: {ex.Message}");
+        }
+    }
+
+    private void EnsurePinningAnimations()
+    {
+        if (pinYAnimation != null || TracksScrollView == null) return;
+        try
+        {
+            var visual = ElementCompositionPreview.GetElementVisual(TracksScrollView);
+            var compositor = visual.Compositor;
+            var sources = TracksScrollView.ExpressionAnimationSources;
+
+            var animY = compositor.CreateExpressionAnimation("seas.Position.Y");
+            animY.SetReferenceParameter("seas", sources);
+            pinYAnimation = animY;
+
+            ApplyPinAnimation(RulerRowContainer, "Translation.Y", pinYAnimation);
+
+            EnsureHorizontalTracker();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceError($"[TimelineView.EnsurePinningAnimations] {ex}");
+        }
+    }
+
+    private void EnsureHorizontalTracker()
+    {
+        if (horizontalTracker != null || TracksScrollView == null) return;
+        try
+        {
+            var contentVisual = ElementCompositionPreview.GetElementVisual(TracksPanel);
+            var compositor = contentVisual.Compositor;
+
+            horizontalTracker = InteractionTracker.CreateWithOwner(compositor, this);
+            horizontalTracker.MaxPosition = new Vector3(1e6f, 0, 0);
+            horizontalTracker.MinPosition = new Vector3(-1e6f, 0, 0);
+
+            visualInteractionSource = VisualInteractionSource.Create(contentVisual);
+            visualInteractionSource.ManipulationRedirectionMode = VisualInteractionSourceRedirectionMode.CapableTouchpadOnly;
+            visualInteractionSource.PositionXSourceMode = InteractionSourceMode.EnabledWithInertia;
+            visualInteractionSource.PositionXChainingMode = InteractionChainingMode.Never;
+            visualInteractionSource.PositionYSourceMode = InteractionSourceMode.Disabled;
+            visualInteractionSource.PositionYChainingMode = InteractionChainingMode.Auto;
+
+            horizontalTracker.InteractionSources.Add(visualInteractionSource);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceError($"[EnsureHorizontalTracker] {ex}");
+        }
+    }
+
+    public void CustomAnimationStateEntered(InteractionTracker sender, InteractionTrackerCustomAnimationStateEnteredArgs args) { }
+    public void RequestIgnored(InteractionTracker sender, InteractionTrackerRequestIgnoredArgs args) { }
+    public void InertiaStateEntered(InteractionTracker sender, InteractionTrackerInertiaStateEnteredArgs args) { }
+
+    public void InteractingStateEntered(InteractionTracker sender, InteractionTrackerInteractingStateEnteredArgs args)
+    {
+        lastTrackerX = sender.Position.X;
+    }
+
+    public void IdleStateEntered(InteractionTracker sender, InteractionTrackerIdleStateEnteredArgs args)
+    {
+        sender.TryUpdatePosition(Vector3.Zero);
+        lastTrackerX = 0;
+        if (frameRenderPending)
+        {
+            CancelPendingFrameRender();
+            RenderAll();
+        }
+    }
+
+    public void ValuesChanged(InteractionTracker sender, InteractionTrackerValuesChangedArgs args)
+    {
+        float curX = args.Position.X;
+        float deltaX = curX - lastTrackerX;
+        lastTrackerX = curX;
+        if (Math.Abs(deltaX) > 0.05f)
+        {
+            double width = GetAvailableViewportCanvasWidth();
+            if (width <= 0) return;
+            double duration = Math.Max(0.001, viewEndMs - viewStartMs);
+            double deltaMs = (deltaX / width) * duration;
+            PanByDeltaMs(deltaMs, immediate: false);
+        }
+    }
+
+    private static void ApplyPinAnimation(UIElement element, string propertyName, ExpressionAnimation animation)
+    {
+        ElementCompositionPreview.SetIsTranslationEnabled(element, true);
+        var visual = ElementCompositionPreview.GetElementVisual(element);
+        visual.Properties.InsertVector3("Translation", Vector3.Zero);
+        visual.StartAnimation(propertyName, animation);
+    }
+
+    private double GetAvailableViewportCanvasWidth()
+    {
+        double width = TracksScrollView.ViewportWidth;
+        if (width <= 0) width = ActualWidth;
+        if (width <= 0) width = 800;
+        return Math.Max(100.0, width);
+    }
+
+    private void TracksScrollView_ViewChanged(ScrollView sender, object args)
+    {
+        HideHover();
+    }
+
+    private bool frameRenderHooked;
+    private bool frameRenderPending;
+
+    private void RequestFrameRender()
+    {
+        frameRenderPending = true;
+        if (!frameRenderHooked)
+        {
+            frameRenderHooked = true;
+            CompositionTarget.Rendering += OnCompositionTargetRendering;
+        }
+    }
+
+    private void CancelPendingFrameRender()
+    {
+        frameRenderPending = false;
+        if (frameRenderHooked)
+        {
+            CompositionTarget.Rendering -= OnCompositionTargetRendering;
+            frameRenderHooked = false;
+        }
+    }
+
+    private void OnCompositionTargetRendering(object? sender, object e)
+    {
+        CancelPendingFrameRender();
+        RenderAll();
+    }
+
+    private void ApplyVisibleRange(double newStart, double newEnd, bool immediate = true)
+    {
+        double minBound = totalMinMs;
+        double maxBound = totalMaxMs;
+
+        if (newStart < minBound)
+        {
+            newEnd = Math.Min(maxBound, newEnd + (minBound - newStart));
+            newStart = minBound;
+        }
+        if (newEnd > maxBound)
+        {
+            newStart = Math.Max(minBound, newStart - (newEnd - maxBound));
+            newEnd = maxBound;
+        }
+
+        newStart = Math.Clamp(newStart, minBound, maxBound - 0.05);
+        newEnd = Math.Clamp(newEnd, newStart + 0.05, maxBound);
+
+        viewStartMs = newStart;
+        viewEndMs = newEnd;
+
+        double duration = Math.Max(0.05, viewEndMs - viewStartMs);
+        double availableWidth = GetAvailableViewportCanvasWidth();
+        pxPerMs = availableWidth / duration;
+
+        UpdateToolbarStatus();
+        UpdateOverviewSelection();
+
+        if (immediate)
+        {
+            CancelPendingFrameRender();
+            RenderAll();
+        }
+        else
+        {
+            RequestFrameRender();
         }
     }
 
@@ -585,9 +778,7 @@ public sealed partial class TimelineView : UserControl
 
             if (maxX - minX >= 4)
             {
-                viewStartMs = t1;
-                viewEndMs = Math.Max(t1 + 0.1, t2);
-                RequestRender();
+                ApplyVisibleRange(t1, Math.Max(t1 + 0.1, t2), immediate: false);
             }
         }
         else if (overviewDrag == OverviewDragMode.LeftHandle)
@@ -595,16 +786,14 @@ public sealed partial class TimelineView : UserControl
             double deltaX = pt.Position.X - overviewDragStartX;
             double deltaMs = (deltaX / width) * totalDuration;
             double newStart = Math.Clamp(overviewDragStartViewStart + deltaMs, totalMinMs, overviewDragStartViewEnd - 0.1);
-            viewStartMs = newStart;
-            RequestRender();
+            ApplyVisibleRange(newStart, overviewDragStartViewEnd, immediate: false);
         }
         else if (overviewDrag == OverviewDragMode.RightHandle)
         {
             double deltaX = pt.Position.X - overviewDragStartX;
             double deltaMs = (deltaX / width) * totalDuration;
             double newEnd = Math.Clamp(overviewDragStartViewEnd + deltaMs, overviewDragStartViewStart + 0.1, totalMaxMs);
-            viewEndMs = newEnd;
-            RequestRender();
+            ApplyVisibleRange(overviewDragStartViewStart, newEnd, immediate: false);
         }
         else if (overviewDrag == OverviewDragMode.WindowBody)
         {
@@ -613,9 +802,7 @@ public sealed partial class TimelineView : UserControl
             double span = Math.Min(totalDuration, overviewDragStartViewEnd - overviewDragStartViewStart);
             double maxStart = Math.Max(totalMinMs, totalMaxMs - span);
             double newStart = Math.Clamp(overviewDragStartViewStart + deltaMs, totalMinMs, maxStart);
-            viewStartMs = newStart;
-            viewEndMs = newStart + span;
-            RequestRender();
+            ApplyVisibleRange(newStart, newStart + span, immediate: false);
         }
 
         e.Handled = true;
@@ -629,6 +816,12 @@ public sealed partial class TimelineView : UserControl
             overviewDrag = OverviewDragMode.None;
             OverviewContainer.ReleasePointerCapture(e.Pointer);
 
+            if (frameRenderPending)
+            {
+                CancelPendingFrameRender();
+                RenderAll();
+            }
+
             var pt = e.GetCurrentPoint(OverviewContainer);
             var width = OverviewContainer.ActualWidth;
 
@@ -637,9 +830,9 @@ public sealed partial class TimelineView : UserControl
                 double totalDuration = Math.Max(0.001, totalMaxMs - totalMinMs);
                 double clickMs = totalMinMs + Math.Clamp(pt.Position.X / width, 0, 1) * totalDuration;
                 double winSpan = totalDuration * 0.2;
-                viewStartMs = Math.Max(totalMinMs, clickMs - winSpan / 2);
-                viewEndMs = Math.Min(totalMaxMs, clickMs + winSpan / 2);
-                RequestRender();
+                double newStart = Math.Max(totalMinMs, clickMs - winSpan / 2);
+                double newEnd = Math.Min(totalMaxMs, clickMs + winSpan / 2);
+                ApplyVisibleRange(newStart, newEnd);
             }
 
             ProtectedCursor = null;
@@ -679,13 +872,21 @@ public sealed partial class TimelineView : UserControl
             return;
         }
 
-        double mouseX = pt.Position.X;
-        double width = OverviewContainer.ActualWidth;
-        if (width <= 0) width = ActualWidth;
-        if (width <= 0) return;
-
+        double overviewWidth = OverviewContainer.ActualWidth;
         double factor = delta > 0 ? 0.75 : 1.333;
-        ZoomAroundPoint(mouseX, width, factor);
+        if (overviewWidth > 0)
+        {
+            double timeRatio = Math.Clamp(pt.Position.X / overviewWidth, 0.0, 1.0);
+            double targetTimeMs = totalMinMs + timeRatio * (totalMaxMs - totalMinMs);
+            double currentDuration = Math.Max(0.05, viewEndMs - viewStartMs);
+            double mouseRatio = Math.Clamp((targetTimeMs - viewStartMs) / currentDuration, 0.0, 1.0);
+            double mouseX = mouseRatio * GetAvailableViewportCanvasWidth();
+            ZoomAroundPoint(mouseX, factor);
+        }
+        else
+        {
+            ZoomByFactor(factor);
+        }
         e.Handled = true;
     }
 
@@ -699,11 +900,7 @@ public sealed partial class TimelineView : UserControl
 
     private void ResetToFullExtent()
     {
-        HideHover();
-        viewStartMs = totalMinMs;
-        viewEndMs = totalMaxMs;
-        UpdateOverviewSelection();
-        RenderAll();
+        ApplyVisibleRange(totalMinMs, totalMaxMs);
     }
 
     #endregion
@@ -714,30 +911,7 @@ public sealed partial class TimelineView : UserControl
 
     private void Ruler_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
-        var pt = e.GetCurrentPoint(RulerCanvas);
-        int delta = pt.Properties.MouseWheelDelta;
-        if (delta == 0) return;
-
-        bool isShift = e.KeyModifiers.HasFlag(VirtualKeyModifiers.Shift) || IsShiftPressed();
-        bool isHorizontal = pt.Properties.IsHorizontalMouseWheel || isShift;
-
-        if (isHorizontal)
-        {
-            double duration = viewEndMs - viewStartMs;
-            double fraction = (delta / 120.0) * 0.10;
-            PanByDeltaMs(duration * fraction);
-            e.Handled = true;
-            return;
-        }
-
-        double mouseX = pt.Position.X;
-        double width = RulerCanvas.ActualWidth;
-        if (width <= 0) width = ActualWidth;
-        if (width <= 0) return;
-
-        double factor = delta > 0 ? 0.75 : 1.333;
-        ZoomAroundPoint(mouseX, width, factor);
-        e.Handled = true;
+        Tracks_PointerWheelChanged(sender, e);
     }
 
     private void RenderRuler()
@@ -747,23 +921,23 @@ public sealed partial class TimelineView : UserControl
         var height = RulerCanvas.ActualHeight;
         if (width <= 0 || height <= 0 || allActivities.Count == 0) return;
 
-        double duration = Math.Max(0.001, viewEndMs - viewStartMs);
+        double visibleDuration = Math.Max(0.001, viewEndMs - viewStartMs);
         double targetTickSpacingPx = 80;
         double approxTicks = Math.Max(1, width / targetTickSpacingPx);
-        double rawInterval = duration / approxTicks;
+        double rawInterval = visibleDuration / approxTicks;
         double niceInterval = CalculateNiceInterval(rawInterval);
         if (niceInterval <= 1e-6 || double.IsNaN(niceInterval) || double.IsInfinity(niceInterval))
         {
             niceInterval = 1.0;
         }
 
-        double firstTick = Math.Ceiling(viewStartMs / niceInterval) * niceInterval;
+        double firstTick = Math.Floor(viewStartMs / niceInterval) * niceInterval;
         int tickCount = 0;
 
-        for (double t = firstTick; t <= viewEndMs && tickCount < 100; t += niceInterval, tickCount++)
+        for (double t = firstTick; t <= viewEndMs + niceInterval && tickCount < 300; t += niceInterval, tickCount++)
         {
-            double x = (t - viewStartMs) / duration * width;
-            if (x < 0 || x > width) continue;
+            double x = (t - viewStartMs) / visibleDuration * width;
+            if (x < -50 || x > width + 50) continue;
 
             // Tick mark
             var tickPath = new Line
@@ -826,22 +1000,13 @@ public sealed partial class TimelineView : UserControl
     {
         UpdateToolbarStatus();
         UpdateOverviewSelection();
-
-        if (renderPending) return;
-        renderPending = true;
-
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
-        {
-            renderPending = false;
-            RenderAll();
-        });
+        RequestFrameRender();
     }
 
     private void RenderAll()
     {
         try
         {
-            renderPending = false;
             UpdateToolbarStatus();
             RenderRuler();
             RenderFramesTrack();
@@ -971,10 +1136,12 @@ public sealed partial class TimelineView : UserControl
         var height = FramesCanvas.ActualHeight > 0 ? FramesCanvas.ActualHeight : 34;
         if (width <= 0 || frameActivities.Count == 0) return;
 
-        double duration = Math.Max(0.001, viewEndMs - viewStartMs);
-        double pxPerMs = width / duration;
+        double visibleDuration = Math.Max(0.001, viewEndMs - viewStartMs);
+        double bufferMarginMs = 0.5 * visibleDuration;
+        double renderStartMs = Math.Max(totalMinMs, viewStartMs - bufferMarginMs);
+        double renderEndMs = Math.Min(totalMaxMs, viewEndMs + bufferMarginMs);
 
-        int startIdx = FindFirstStartIndex(frameActivities, viewStartMs - 100);
+        int startIdx = FindFirstStartIndex(frameActivities, renderStartMs - 100);
         if (startIdx >= frameActivities.Count) return;
 
         var requestGeom = new GeometryGroup();
@@ -988,11 +1155,11 @@ public sealed partial class TimelineView : UserControl
         for (int i = startIdx; i < frameActivities.Count; i++)
         {
             var act = frameActivities[i];
-            if (act.StartMs > viewEndMs) break;
-            if (act.EndMs < viewStartMs) continue;
+            if (act.StartMs > renderEndMs) break;
+            if (act.EndMs < renderStartMs) continue;
 
             double ms = act.IsFrameCommit && act.IsDuration ? act.EndMs : act.StartMs;
-            double x = (ms - viewStartMs) * pxPerMs;
+            double x = (ms - viewStartMs) / visibleDuration * width;
             if (double.IsNaN(x) || double.IsInfinity(x)) continue;
             if (x < -5 || x > width + 5) continue;
 
@@ -1122,7 +1289,6 @@ public sealed partial class TimelineView : UserControl
 
         var header = new Grid
         {
-            Margin = new Thickness(4, 4, 4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent)
         };
@@ -1176,7 +1342,9 @@ public sealed partial class TimelineView : UserControl
             FontWeight = FontWeights.SemiBold,
             FontSize = 12,
             Margin = new Thickness(0, 0, 8, 0),
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 400
         };
         Grid.SetColumn(titleText, 2);
 
@@ -1194,18 +1362,34 @@ public sealed partial class TimelineView : UserControl
         header.Children.Add(countText);
 
         double neededHeight = (track.MaxDepth + 1) * (LaneHeight + LaneSpacing) + TrackTopPadding + 8;
+        double trackHeight = Math.Max(MinTrackHeight, neededHeight);
+
+        var headerBorder = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(4, 2, 4, 2),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Canvas.SetZIndex(headerBorder, 10);
+        Grid.SetRow(headerBorder, 0);
+        headerBorder.Child = header;
+
         var border = new Border
         {
-            Height = Math.Max(MinTrackHeight, neededHeight),
+            Height = trackHeight,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Background = FramesTrackBorder.Background,
             BorderBrush = FramesTrackBorder.BorderBrush,
-            BorderThickness = FramesTrackBorder.BorderThickness,
-            CornerRadius = FramesTrackBorder.CornerRadius
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            VerticalAlignment = VerticalAlignment.Top
         };
         Grid.SetRow(border, 1);
 
         var canvas = new Canvas
         {
+            Height = Math.Max(30, trackHeight - 2),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent)
         };
         canvas.PointerWheelChanged += Tracks_PointerWheelChanged;
@@ -1217,10 +1401,11 @@ public sealed partial class TimelineView : UserControl
         canvas.PointerExited += Track_PointerExited;
 
         border.Child = canvas;
-        container.Children.Add(header);
+        container.Children.Add(headerBorder);
         container.Children.Add(border);
 
         track.Container = container;
+        track.HeaderBorder = headerBorder;
         track.Border = border;
         track.Canvas = canvas;
         track.ChevronIcon = chevron;
@@ -1259,10 +1444,12 @@ public sealed partial class TimelineView : UserControl
         var activities = track.Activities;
         if (width <= 0 || height <= 0 || activities.Count == 0) return;
 
-        double duration = Math.Max(0.001, viewEndMs - viewStartMs);
-        double pxPerMs = width / duration;
+        double visibleDuration = Math.Max(0.001, viewEndMs - viewStartMs);
+        double bufferMarginMs = 0.5 * visibleDuration;
+        double renderStartMs = Math.Max(totalMinMs, viewStartMs - bufferMarginMs);
+        double renderEndMs = Math.Min(totalMaxMs, viewEndMs + bufferMarginMs);
 
-        int startIdx = FindFirstStartIndex(activities, viewStartMs - track.MaxDuration);
+        int startIdx = FindFirstStartIndex(activities, renderStartMs - track.MaxDuration);
         if (startIdx >= activities.Count) return;
 
         var laneDurationMap = new Dictionary<(int depth, string bucket), List<TimelineActivity>>();
@@ -1271,8 +1458,8 @@ public sealed partial class TimelineView : UserControl
         for (int i = startIdx; i < activities.Count; i++)
         {
             var act = activities[i];
-            if (act.StartMs > viewEndMs) break;
-            if (act.EndMs < viewStartMs) continue;
+            if (act.StartMs > renderEndMs) break;
+            if (act.EndMs < renderStartMs) continue;
 
             var key = (act.Depth, act.Bucket);
             if (act.IsDuration)
@@ -1301,16 +1488,16 @@ public sealed partial class TimelineView : UserControl
         if (showLockRegions && track.LockRegions.Count > 0)
         {
             var lockRegionGeom = new GeometryGroup();
-            int lockStartIdx = FindFirstStartIndex(track.LockRegions, viewStartMs - 1000);
+            int lockStartIdx = FindFirstStartIndex(track.LockRegions, renderStartMs - 1000);
 
             for (int li = lockStartIdx; li < track.LockRegions.Count; li++)
             {
                 var lockReg = track.LockRegions[li];
-                if (lockReg.StartMs > viewEndMs) break;
-                if (lockReg.EndMs < viewStartMs) continue;
+                if (lockReg.StartMs > renderEndMs) break;
+                if (lockReg.EndMs < renderStartMs) continue;
 
-                double rawX1 = (lockReg.StartMs - viewStartMs) * pxPerMs;
-                double rawX2 = (lockReg.EndMs - viewStartMs) * pxPerMs;
+                double rawX1 = (lockReg.StartMs - viewStartMs) / visibleDuration * width;
+                double rawX2 = (lockReg.EndMs - viewStartMs) / visibleDuration * width;
                 if (rawX2 < -5 || rawX1 > width + 5) continue;
 
                 double x1 = Math.Clamp(rawX1, 0, width);
@@ -1418,8 +1605,8 @@ public sealed partial class TimelineView : UserControl
 
             foreach (var act in laneActs)
             {
-                double rawX1 = (act.StartMs - viewStartMs) * pxPerMs;
-                double rawX2 = (act.EndMs - viewStartMs) * pxPerMs;
+                double rawX1 = (act.StartMs - viewStartMs) / visibleDuration * width;
+                double rawX2 = (act.EndMs - viewStartMs) / visibleDuration * width;
                 if (double.IsNaN(rawX1) || double.IsInfinity(rawX1) || double.IsNaN(rawX2) || double.IsInfinity(rawX2)) continue;
 
                 double naturalW = rawX2 - rawX1;
@@ -1614,7 +1801,7 @@ public sealed partial class TimelineView : UserControl
 
             foreach (var act in laneActs)
             {
-                double x = (act.StartMs - viewStartMs) * pxPerMs;
+                double x = (act.StartMs - viewStartMs) / visibleDuration * width;
                 if (double.IsNaN(x) || double.IsInfinity(x)) continue;
                 if (x < -5 || x > width + 5) continue;
 
@@ -1665,8 +1852,8 @@ public sealed partial class TimelineView : UserControl
 
         if (selectedLockRegion is not null && selectedLockRegion.ThreadId == track.ThreadId)
         {
-            double rawX1 = (selectedLockRegion.StartMs - viewStartMs) * pxPerMs;
-            double rawX2 = (selectedLockRegion.EndMs - viewStartMs) * pxPerMs;
+            double rawX1 = (selectedLockRegion.StartMs - viewStartMs) / visibleDuration * width;
+            double rawX2 = (selectedLockRegion.EndMs - viewStartMs) / visibleDuration * width;
             if (rawX2 >= 0 && rawX1 <= width)
             {
                 double x1 = Math.Clamp(rawX1, -5, width + 5);
@@ -1726,69 +1913,33 @@ public sealed partial class TimelineView : UserControl
 
     #region Mouse & Keyboard Navigation
 
-    private void Tracks_ManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
-    {
-        if (isPanning || overviewDrag != OverviewDragMode.None)
-        {
-            e.Handled = true;
-            return;
-        }
-
-        double deltaX = e.Delta.Translation.X;
-        if (Math.Abs(deltaX) > 0.001)
-        {
-            HideHover();
-            double width = TracksScrollViewer.ActualWidth;
-            if (width <= 0) width = ActualWidth;
-            if (width <= 0) width = 800;
-
-            double duration = viewEndMs - viewStartMs;
-            // Swiping fingers left (deltaX < 0) advances timeline forward (increases time).
-            // Swiping fingers right (deltaX > 0) moves timeline backward (decreases time).
-            double deltaMs = -(deltaX / width) * duration;
-            PanByDeltaMs(deltaMs);
-            e.Handled = true;
-        }
-    }
-
     private void Tracks_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
-        var pt = e.GetCurrentPoint(TracksScrollViewer);
+        var pt = e.GetCurrentPoint(TracksScrollView);
         int delta = pt.Properties.MouseWheelDelta;
         if (delta == 0) return;
-
-        bool isShift = e.KeyModifiers.HasFlag(VirtualKeyModifiers.Shift) || IsShiftPressed();
-        bool isHorizontal = pt.Properties.IsHorizontalMouseWheel || isShift;
-
-        if (isHorizontal)
-        {
-            isHandlingHorizontalPan = true;
-            lockedVerticalOffset = TracksScrollViewer.VerticalOffset;
-
-            double duration = viewEndMs - viewStartMs;
-            // Horizontal wheel / tilt: delta > 0 (tilted right) advances timeline forward
-            // Shift + vertical wheel: delta < 0 (rolled down/back) advances timeline forward
-            double sign = pt.Properties.IsHorizontalMouseWheel ? 1.0 : -1.0;
-            double fraction = sign * (delta / 120.0) * 0.10;
-            PanByDeltaMs(duration * fraction);
-            e.Handled = true;
-
-            DispatcherQueue.TryEnqueue(() => isHandlingHorizontalPan = false);
-            return;
-        }
 
         bool isCtrl = e.KeyModifiers.HasFlag(VirtualKeyModifiers.Control) || IsControlPressed();
         if (isCtrl)
         {
-            double mouseX = pt.Position.X;
-            double width = TracksScrollViewer.ActualWidth;
-            if (width <= 0) width = ActualWidth;
-            if (width <= 0) return;
-
             double factor = delta > 0 ? 0.75 : 1.333;
-            ZoomAroundPoint(mouseX, width, factor);
+            double mouseX = Math.Max(0, pt.Position.X);
+            ZoomAroundPoint(mouseX, factor);
             e.Handled = true;
+            return;
         }
+
+        bool isShift = e.KeyModifiers.HasFlag(VirtualKeyModifiers.Shift) || pt.Properties.IsHorizontalMouseWheel || IsShiftPressed();
+        if (isShift)
+        {
+            double duration = viewEndMs - viewStartMs;
+            double panFraction = -(delta / 120.0) * 0.1;
+            PanByDeltaMs(duration * panFraction);
+            e.Handled = true;
+            return;
+        }
+
+        e.Handled = false;
     }
 
     private void Track_PointerPressed(object sender, PointerRoutedEventArgs e)
@@ -1799,12 +1950,12 @@ public sealed partial class TimelineView : UserControl
         Focus(FocusState.Programmatic);
         HideHover();
 
-        if (pt.Properties.IsLeftButtonPressed)
+        if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse && pt.Properties.IsLeftButtonPressed)
         {
             isPanning = true;
-            panStartPoint = pt.Position;
-            panStartViewStart = viewStartMs;
-            panStartViewEnd = viewEndMs;
+            panStartPoint = e.GetCurrentPoint(TracksScrollView).Position;
+            panLastPoint = panStartPoint;
+            panStartVOffset = TracksScrollView.VerticalOffset;
             canvas.CapturePointer(e.Pointer);
             e.Handled = true;
         }
@@ -1816,21 +1967,24 @@ public sealed partial class TimelineView : UserControl
         if (isPanning)
         {
             HideHover();
-            var pt = e.GetCurrentPoint(canvas);
-            double deltaX = pt.Position.X - panStartPoint.X;
-            double width = canvas.ActualWidth;
-            if (width <= 0) return;
+            var pt = e.GetCurrentPoint(TracksScrollView).Position;
+            double dx = pt.X - panLastPoint.X;
+            double dy = pt.Y - panLastPoint.Y;
+            panLastPoint = pt;
 
-            double totalSpan = Math.Max(0.001, totalMaxMs - totalMinMs);
-            double duration = Math.Min(totalSpan, panStartViewEnd - panStartViewStart);
-            double deltaMs = -(deltaX / width) * duration;
+            double width = GetAvailableViewportCanvasWidth();
+            if (width > 0 && Math.Abs(dx) > 0)
+            {
+                double duration = viewEndMs - viewStartMs;
+                double deltaMs = -(dx / width) * duration;
+                PanByDeltaMs(deltaMs, immediate: false);
+            }
 
-            double maxStart = Math.Max(totalMinMs, totalMaxMs - duration);
-            double newStart = Math.Clamp(panStartViewStart + deltaMs, totalMinMs, maxStart);
+            if (Math.Abs(dy) > 0)
+            {
+                TracksScrollView.ScrollBy(0, -dy, new ScrollingScrollOptions(ScrollingAnimationMode.Disabled));
+            }
 
-            viewStartMs = newStart;
-            viewEndMs = newStart + duration;
-            RequestRender();
             e.Handled = true;
             return;
         }
@@ -1846,24 +2000,38 @@ public sealed partial class TimelineView : UserControl
             isPanning = false;
             canvas.ReleasePointerCapture(e.Pointer);
 
-            var pt = e.GetCurrentPoint(canvas);
-            // If mouse didn't drag far, treat as click to select activity
-            if (Math.Abs(pt.Position.X - panStartPoint.X) < 4 && Math.Abs(pt.Position.Y - panStartPoint.Y) < 4)
+            if (frameRenderPending)
             {
-                HitTestActivity(canvas, pt.Position);
+                CancelPendingFrameRender();
+                RenderAll();
+            }
+
+            var pt = e.GetCurrentPoint(TracksScrollView).Position;
+            if (Math.Abs(pt.X - panStartPoint.X) < 4 && Math.Abs(pt.Y - panStartPoint.Y) < 4)
+            {
+                var canvasPt = e.GetCurrentPoint(canvas).Position;
+                HitTestActivity(canvas, canvasPt);
             }
             e.Handled = true;
         }
         else
         {
-            var pt = e.GetCurrentPoint(canvas);
-            HitTestActivity(canvas, pt.Position);
+            var pt = e.GetCurrentPoint(canvas).Position;
+            HitTestActivity(canvas, pt);
         }
     }
 
     private void Track_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
     {
-        isPanning = false;
+        if (isPanning)
+        {
+            isPanning = false;
+            if (frameRenderPending)
+            {
+                CancelPendingFrameRender();
+                RenderAll();
+            }
+        }
         HideHover();
     }
 
@@ -1906,7 +2074,6 @@ public sealed partial class TimelineView : UserControl
         // Thread Track Canvas
         double width = canvas.ActualWidth;
         if (width <= 0) return null;
-
         double duration = Math.Max(0.001, viewEndMs - viewStartMs);
         double mouseMs = viewStartMs + (mouseX / width) * duration;
 
@@ -2296,64 +2463,51 @@ public sealed partial class TimelineView : UserControl
 
     private void ZoomByFactor(double factor)
     {
-        var width = FramesCanvas.ActualWidth;
-        if (width <= 0) width = TracksScrollViewer.ActualWidth;
-        if (width <= 0) width = ActualWidth;
-        if (width <= 0) width = 800;
-        ZoomAroundPoint(width / 2, width, factor);
+        double availableWidth = GetAvailableViewportCanvasWidth();
+        ZoomAroundPoint(availableWidth / 2.0, factor);
     }
 
-    private void ZoomAroundPoint(double mouseX, double width, double factor)
+    private void ZoomAroundPoint(double mouseX, double factor)
     {
-        if (width <= 0 || allActivities.Count == 0) return;
+        if (allActivities.Count == 0) return;
         HideHover();
-        double minBound = totalMinMs;
-        double maxBound = totalMaxMs;
-        double allowedSpan = Math.Max(0.1, maxBound - minBound);
 
-        double currentDuration = Math.Max(0.1, viewEndMs - viewStartMs);
-        double newDuration = Math.Clamp(currentDuration * factor, 0.1, allowedSpan);
+        double availableWidth = GetAvailableViewportCanvasWidth();
+        double currentDuration = Math.Max(0.05, viewEndMs - viewStartMs);
+        double totalSpan = Math.Max(0.05, totalMaxMs - totalMinMs);
 
-        double ratio = Math.Clamp(mouseX / width, 0, 1);
-        double pointerTime = viewStartMs + ratio * currentDuration;
+        double newDuration = Math.Clamp(currentDuration * factor, 0.05, totalSpan);
+        double pointerRatio = Math.Clamp(mouseX / availableWidth, 0.0, 1.0);
+        double pointerTimeMs = viewStartMs + pointerRatio * currentDuration;
 
-        double newStart = pointerTime - ratio * newDuration;
-        double newEnd = pointerTime + (1 - ratio) * newDuration;
+        double newStart = pointerTimeMs - pointerRatio * newDuration;
+        double newEnd = pointerTimeMs + (1.0 - pointerRatio) * newDuration;
 
-        if (newStart < minBound)
-        {
-            newStart = minBound;
-            newEnd = Math.Min(maxBound, newStart + newDuration);
-        }
-        if (newEnd > maxBound)
-        {
-            newEnd = maxBound;
-            newStart = Math.Max(minBound, newEnd - newDuration);
-        }
-
-        viewStartMs = newStart;
-        viewEndMs = Math.Max(newStart + 0.1, newEnd);
-        RequestRender();
+        ApplyVisibleRange(newStart, newEnd);
     }
 
     private void PanByFraction(double fraction)
     {
-        double duration = viewEndMs - viewStartMs;
-        PanByDeltaMs(duration * fraction);
+        double dur = viewEndMs - viewStartMs;
+        PanByDeltaMs(dur * fraction, immediate: true);
     }
 
-    private void PanByDeltaMs(double delta)
+    private void PanByDeltaMs(double deltaMs, bool immediate = true)
     {
-        HideHover();
-        double totalSpan = Math.Max(0.001, totalMaxMs - totalMinMs);
-        double duration = Math.Min(totalSpan, viewEndMs - viewStartMs);
-        double maxStart = Math.Max(totalMinMs, totalMaxMs - duration);
-
-        double newStart = Math.Clamp(viewStartMs + delta, totalMinMs, maxStart);
-
-        viewStartMs = newStart;
-        viewEndMs = newStart + duration;
-        RequestRender();
+        double dur = viewEndMs - viewStartMs;
+        double newStart = viewStartMs + deltaMs;
+        double newEnd = viewEndMs + deltaMs;
+        if (newStart < totalMinMs)
+        {
+            newStart = totalMinMs;
+            newEnd = newStart + dur;
+        }
+        if (newEnd > totalMaxMs)
+        {
+            newEnd = totalMaxMs;
+            newStart = Math.Max(totalMinMs, newEnd - dur);
+        }
+        ApplyVisibleRange(newStart, newEnd, immediate);
     }
 
     private void ZoomIn_Click(object sender, RoutedEventArgs e) => ZoomByFactor(0.75);
@@ -2370,7 +2524,8 @@ public sealed partial class TimelineView : UserControl
         foreach (var track in threadTracks)
         {
             double neededHeight = (track.MaxDepth + 1) * (LaneHeight + LaneSpacing) + TrackTopPadding + 8;
-            track.Border.Height = Math.Max(MinTrackHeight, neededHeight);
+            double trackHeight = Math.Max(MinTrackHeight, neededHeight);
+            track.Border.Height = trackHeight;
         }
     }
 
