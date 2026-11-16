@@ -272,12 +272,7 @@
                         <Border x:Name="RulerBorder"
                                 Height="24" Background="{ThemeResource RulerBackgroundBrush}"
                                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1"
-                                CornerRadius="4">
-                            <Canvas x:Name="RulerCanvas" Background="Transparent"
-                                    Height="24"
-                                    SizeChanged="RulerCanvas_SizeChanged"
-                                    PointerWheelChanged="Ruler_PointerWheelChanged" />
-                        </Border>
+                                CornerRadius="4" />
                     </Grid>
 
                     <!-- Tracks Panel (Row 1) -->
@@ -301,18 +296,7 @@
                             <Border x:Name="FramesTrackBorder" Grid.Row="1"
                                     Height="36" MinHeight="36" MaxHeight="36"
                                     Background="{ThemeResource TrackBackgroundBrush}"
-                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
-                                <Canvas x:Name="FramesCanvas"
-                                        Height="34"
-                                        Background="Transparent"
-                                        PointerWheelChanged="Tracks_PointerWheelChanged"
-                                        SizeChanged="TrackCanvas_SizeChanged"
-                                        PointerPressed="Track_PointerPressed"
-                                        PointerMoved="Track_PointerMoved"
-                                        PointerReleased="Track_PointerReleased"
-                                        PointerCaptureLost="Track_PointerCaptureLost"
-                                        PointerExited="Track_PointerExited" />
-                            </Border>
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4" />
                         </Grid>
 
                         <!-- Dynamic Thread Tracks -->

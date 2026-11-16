@@ -23,6 +23,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" />
     <ProjectReference Include="..\WinUIProfiler.Core\WinUIProfiler.Core.csproj" />
   </ItemGroup>
   <Target Name="StageSelfContainedRuntime" AfterTargets="Build" DependsOnTargets="CreateWinRTRegistration">

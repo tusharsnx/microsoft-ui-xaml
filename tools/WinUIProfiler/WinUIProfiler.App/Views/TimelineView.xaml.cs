@@ -18,6 +18,9 @@ using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
 using Windows.System;
 using Windows.UI;
+using Microsoft.Graphics.Canvas;
+using Microsoft.Graphics.Canvas.UI.Xaml;
+using Microsoft.Graphics.Canvas.Text;
 using WinUIProfiler.App.ViewModels;
 using WinUIProfiler.Engine.Events;
 using WinUIProfiler.Engine.Storage;
@@ -75,6 +78,9 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         public string Name { get; init; } = "";
         public IReadOnlyList<TimelineActivity> Activities { get; init; } = [];
         public IReadOnlyList<TimelineLockRegion> LockRegions { get; init; } = [];
+        public List<TimelineActivity>[] LaneDurations { get; set; } = [];
+        public List<TimelineActivity>[] LaneInstants { get; set; } = [];
+        public List<VisualHitItem> VisualItems { get; } = new();
         public double MaxDuration { get; init; }
         public int MaxDepth { get; init; }
         public bool IsCollapsed { get; set; }
@@ -82,13 +88,103 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         public Grid Container { get; set; } = null!;
         public Border HeaderBorder { get; set; } = null!;
         public Border Border { get; set; } = null!;
-        public Canvas Canvas { get; set; } = null!;
+        public CanvasControl CanvasControl { get; set; } = null!;
         public FontIcon ChevronIcon { get; set; } = null!;
         public TextBlock CountText { get; set; } = null!;
     }
 
-    private readonly Dictionary<Canvas, List<VisualHitItem>> canvasVisualItems = new();
+    private sealed class TimelinePalette
+    {
+        public Color XamlColor { get; init; }
+        public Color XamlFill { get; init; }
+        public Color CompColor { get; init; }
+        public Color CompFill { get; init; }
+        public Color OtherColor { get; init; }
+        public Color OtherFill { get; init; }
+        public Color IdleWaitColor { get; init; }
+        public Color IdleWaitFill { get; init; }
+        public Color LockSpanColor { get; init; }
+        public Color LockRegionFill { get; init; }
+        public Color FrameRequestColor { get; init; }
+        public Color FrameCommitColor { get; init; }
+        public Color FrameCommitDelayedColor { get; init; }
+        public Color TextColor { get; init; }
+        public Color AttentionColor { get; init; }
+    }
+
+    private static readonly TimelinePalette DarkPalette = new()
+    {
+        XamlColor = Color.FromArgb(0xFF, 0x00, 0x78, 0xD4),
+        XamlFill = Color.FromArgb(0xFF, 0x1F, 0x38, 0x4B),
+        CompColor = Color.FromArgb(0xFF, 0x87, 0x64, 0xB8),
+        CompFill = Color.FromArgb(0xFF, 0x3B, 0x34, 0x45),
+        OtherColor = Color.FromArgb(0xFF, 0xD8, 0x3B, 0x01),
+        OtherFill = Color.FromArgb(0xFF, 0x4C, 0x2B, 0x1F),
+        IdleWaitColor = Color.FromArgb(0xFF, 0xA0, 0xA0, 0xA0),
+        IdleWaitFill = Color.FromArgb(0xFF, 0x2E, 0x2E, 0x2E),
+        LockSpanColor = Color.FromArgb(0xFF, 0xB3, 0x88, 0xFF),
+        LockRegionFill = Color.FromArgb(0xFF, 0x2F, 0x2D, 0x34),
+        FrameRequestColor = Color.FromArgb(0x70, 0xA0, 0xA0, 0xA0),
+        FrameCommitColor = Color.FromArgb(0xFF, 0x27, 0xC3, 0x80),
+        FrameCommitDelayedColor = Color.FromArgb(0xFF, 0xFF, 0x43, 0x43),
+        TextColor = Color.FromArgb(0xAA, 0xFF, 0xFF, 0xFF),
+        AttentionColor = Color.FromArgb(0xFF, 0xFF, 0xC8, 0x3B)
+    };
+
+    private static readonly TimelinePalette LightPalette = new()
+    {
+        XamlColor = Color.FromArgb(0xFF, 0x00, 0x5A, 0x9E),
+        XamlFill = Color.FromArgb(0xFF, 0xD6, 0xE7, 0xF4),
+        CompColor = Color.FromArgb(0xFF, 0x6B, 0x2D, 0x8B),
+        CompFill = Color.FromArgb(0xFF, 0xE9, 0xE4, 0xF0),
+        OtherColor = Color.FromArgb(0xFF, 0xA8, 0x00, 0x00),
+        OtherFill = Color.FromArgb(0xFF, 0xF5, 0xDE, 0xD6),
+        IdleWaitColor = Color.FromArgb(0xFF, 0xB5, 0xB5, 0xB5),
+        IdleWaitFill = Color.FromArgb(0xFF, 0xF2, 0xF2, 0xF2),
+        LockSpanColor = Color.FromArgb(0xFF, 0x7C, 0x3A, 0xED),
+        LockRegionFill = Color.FromArgb(0xFF, 0xEC, 0xE6, 0xF7),
+        FrameRequestColor = Color.FromArgb(0x50, 0x00, 0x00, 0x00),
+        FrameCommitColor = Color.FromArgb(0xFF, 0x10, 0x7C, 0x41),
+        FrameCommitDelayedColor = Color.FromArgb(0xFF, 0xD1, 0x34, 0x38),
+        TextColor = Color.FromArgb(0xAA, 0x00, 0x00, 0x00),
+        AttentionColor = Color.FromArgb(0xFF, 0x00, 0x78, 0xD4)
+    };
+
+    private TimelinePalette CurrentPalette => ActualTheme == ElementTheme.Light ? LightPalette : DarkPalette;
+
+    private static (Color stroke, Color fill) GetBucketColors(string bucket, TimelinePalette palette) => bucket switch
+    {
+        "Xaml" => (palette.XamlColor, palette.XamlFill),
+        "Composition" => (palette.CompColor, palette.CompFill),
+        "Idle" => (palette.IdleWaitColor, palette.IdleWaitFill),
+        _ => (palette.OtherColor, palette.OtherFill)
+    };
+
+    private CanvasControl? rulerCanvasControl;
+    private CanvasControl? framesCanvasControl;
+    private readonly List<VisualHitItem> framesVisualItems = new();
+    private readonly Dictionary<CanvasControl, ThreadTrackInfo> canvasTrackMap = new();
     private readonly List<ThreadTrackInfo> threadTracks = [];
+
+    private readonly HashSet<int> seenRequestX = new();
+    private readonly HashSet<int> seenCommitX = new();
+    private readonly HashSet<int> seenCommitDelayedX = new();
+
+    private readonly CanvasTextFormat rulerTextFormat = new()
+    {
+        FontSize = 10,
+        FontFamily = "Segoe UI",
+        WordWrapping = CanvasWordWrapping.NoWrap
+    };
+
+    private readonly CanvasTextFormat barTextFormat = new()
+    {
+        FontSize = 10,
+        FontFamily = "Segoe UI",
+        WordWrapping = CanvasWordWrapping.NoWrap,
+        Options = CanvasDrawTextOptions.Clip,
+        TrimmingGranularity = CanvasTextTrimmingGranularity.Character
+    };
 
     // Timeline data
     private IReadOnlyList<TimelineActivity> allActivities = [];
@@ -150,6 +246,34 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
     public TimelineView()
     {
         InitializeComponent();
+
+        rulerCanvasControl = new CanvasControl
+        {
+            Height = 24,
+            ClearColor = Color.FromArgb(0, 0, 0, 0)
+        };
+        rulerCanvasControl.Draw += Ruler_Draw;
+        rulerCanvasControl.PointerWheelChanged += Ruler_PointerWheelChanged;
+        rulerCanvasControl.SizeChanged += (_, _) => rulerCanvasControl?.Invalidate();
+        RulerBorder.Child = rulerCanvasControl;
+
+        framesCanvasControl = new CanvasControl
+        {
+            Height = 34,
+            ClearColor = Color.FromArgb(0, 0, 0, 0)
+        };
+        framesCanvasControl.Draw += Frames_Draw;
+        framesCanvasControl.PointerWheelChanged += Tracks_PointerWheelChanged;
+        framesCanvasControl.SizeChanged += (_, _) => framesCanvasControl?.Invalidate();
+        framesCanvasControl.PointerPressed += Track_PointerPressed;
+        framesCanvasControl.PointerMoved += Track_PointerMoved;
+        framesCanvasControl.PointerReleased += Track_PointerReleased;
+        framesCanvasControl.PointerCaptureLost += Track_PointerCaptureLost;
+        framesCanvasControl.PointerExited += Track_PointerExited;
+        FramesTrackBorder.Child = framesCanvasControl;
+
+        ActualThemeChanged += (_, _) => RenderAll();
+
         Loaded += (_, _) =>
         {
             EnsurePinningAnimations();
@@ -268,8 +392,13 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 threadMap[th.ThreadId] = th;
             }
 
+            foreach (var track in threadTracks)
+            {
+                track.CanvasControl?.RemoveFromVisualTree();
+            }
             threadTracks.Clear();
-            canvasVisualItems.Clear();
+            canvasTrackMap.Clear();
+            framesVisualItems.Clear();
             ThreadTracksPanel.Children.Clear();
 
             var grouped = activities
@@ -284,6 +413,28 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                     double maxDur = actList.Count > 0 ? actList.Max(a => a.DurationMs) : 0;
                     int maxDepth = actList.Count > 0 ? actList.Max(a => a.Depth) : 0;
                     var trackLocks = lockRegions.Where(l => l.ThreadId == tid).OrderBy(l => l.StartMs).ToList();
+
+                    var laneDurations = new List<TimelineActivity>[maxDepth + 1];
+                    var laneInstants = new List<TimelineActivity>[maxDepth + 1];
+                    for (int d = 0; d <= maxDepth; d++)
+                    {
+                        laneDurations[d] = new List<TimelineActivity>();
+                        laneInstants[d] = new List<TimelineActivity>();
+                    }
+
+                    foreach (var act in actList)
+                    {
+                        int d = Math.Clamp(act.Depth, 0, maxDepth);
+                        if (act.IsDuration)
+                        {
+                            laneDurations[d].Add(act);
+                        }
+                        else
+                        {
+                            laneInstants[d].Add(act);
+                        }
+                    }
+
                     return new ThreadTrackInfo
                     {
                         ThreadId = tid,
@@ -291,6 +442,8 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                         Name = name,
                         Activities = actList,
                         LockRegions = trackLocks,
+                        LaneDurations = laneDurations,
+                        LaneInstants = laneInstants,
                         MaxDuration = maxDur,
                         MaxDepth = maxDepth,
                         IsCollapsed = false
@@ -522,7 +675,8 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
 
         OverviewContainer.Opacity = empty ? 0.3 : 1.0;
         TracksPanel.Opacity = empty ? 0.3 : 1.0;
-        RulerCanvas.Opacity = empty ? 0.3 : 1.0;
+        RulerBorder.Opacity = empty ? 0.3 : 1.0;
+        FramesTrackBorder.Opacity = empty ? 0.3 : 1.0;
         InspectorBorder.Visibility = Visibility.Collapsed;
 
         if (empty)
@@ -537,10 +691,16 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             frameCommitTimes = [];
             frameCommitDelayedTimes = [];
             frameActivities = [];
+            foreach (var track in threadTracks)
+            {
+                track.CanvasControl?.RemoveFromVisualTree();
+            }
             threadTracks.Clear();
-            canvasVisualItems.Clear();
+            canvasTrackMap.Clear();
+            framesVisualItems.Clear();
             ThreadTracksPanel.Children.Clear();
-            FramesCanvas.Children.Clear();
+            rulerCanvasControl?.Invalidate();
+            framesCanvasControl?.Invalidate();
         }
     }
 
@@ -907,20 +1067,19 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
 
     #region Ruler Rendering
 
-    private void RulerCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RenderRuler();
-
     private void Ruler_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
         Tracks_PointerWheelChanged(sender, e);
     }
 
-    private void RenderRuler()
+    private void Ruler_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
-        RulerCanvas.Children.Clear();
-        var width = RulerCanvas.ActualWidth;
-        var height = RulerCanvas.ActualHeight;
+        var ds = args.DrawingSession;
+        var width = sender.ActualWidth;
+        var height = sender.ActualHeight > 0 ? sender.ActualHeight : 24;
         if (width <= 0 || height <= 0 || allActivities.Count == 0) return;
 
+        var palette = CurrentPalette;
         double visibleDuration = Math.Max(0.001, viewEndMs - viewStartMs);
         double targetTickSpacingPx = 80;
         double approxTicks = Math.Max(1, width / targetTickSpacingPx);
@@ -939,28 +1098,9 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             double x = (t - viewStartMs) / visibleDuration * width;
             if (x < -50 || x > width + 50) continue;
 
-            // Tick mark
-            var tickPath = new Line
-            {
-                X1 = x,
-                Y1 = height - 8,
-                X2 = x,
-                Y2 = height,
-                Stroke = TextSecBrush,
-                StrokeThickness = 1
-            };
-            RulerCanvas.Children.Add(tickPath);
-
-            // Tick text
-            var tb = new TextBlock
-            {
-                Text = FormatTime(t),
-                FontSize = 10,
-                Foreground = TextSecBrush
-            };
-            Canvas.SetLeft(tb, x + 3);
-            Canvas.SetTop(tb, 2);
-            RulerCanvas.Children.Add(tb);
+            float fx = (float)x;
+            ds.DrawLine(fx, (float)(height - 8), fx, (float)height, palette.TextColor, 1.0f);
+            ds.DrawText(FormatTime(t), fx + 3.0f, 2.0f, palette.TextColor, rulerTextFormat);
         }
     }
 
@@ -991,30 +1131,18 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
 
     #region Tracks Rendering
 
-    private void TrackCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        RequestRender();
-    }
-
-    private void RequestRender()
-    {
-        UpdateToolbarStatus();
-        UpdateOverviewSelection();
-        RequestFrameRender();
-    }
-
     private void RenderAll()
     {
         try
         {
             UpdateToolbarStatus();
-            RenderRuler();
-            RenderFramesTrack();
+            rulerCanvasControl?.Invalidate();
+            framesCanvasControl?.Invalidate();
             foreach (var track in threadTracks)
             {
                 if (!track.IsCollapsed)
                 {
-                    RenderThreadTrack(track);
+                    track.CanvasControl?.Invalidate();
                 }
             }
         }
@@ -1122,20 +1250,16 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         FramesCountText.Text = $"({visibleFrames:N0} / {frameActivities.Count:N0})";
     }
 
-    private void RenderFramesTrack()
+    private void Frames_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
-        FramesCanvas.Children.Clear();
-        if (!canvasVisualItems.TryGetValue(FramesCanvas, out var visualItems))
-        {
-            visualItems = new List<VisualHitItem>();
-            canvasVisualItems[FramesCanvas] = visualItems;
-        }
-        visualItems.Clear();
+        var ds = args.DrawingSession;
+        framesVisualItems.Clear();
 
-        var width = FramesCanvas.ActualWidth;
-        var height = FramesCanvas.ActualHeight > 0 ? FramesCanvas.ActualHeight : 34;
+        var width = sender.ActualWidth;
+        var height = sender.ActualHeight > 0 ? sender.ActualHeight : 34;
         if (width <= 0 || frameActivities.Count == 0) return;
 
+        var palette = CurrentPalette;
         double visibleDuration = Math.Max(0.001, viewEndMs - viewStartMs);
         double bufferMarginMs = 0.5 * visibleDuration;
         double renderStartMs = Math.Max(totalMinMs, viewStartMs - bufferMarginMs);
@@ -1144,13 +1268,9 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         int startIdx = FindFirstStartIndex(frameActivities, renderStartMs - 100);
         if (startIdx >= frameActivities.Count) return;
 
-        var requestGeom = new GeometryGroup();
-        var commitGeom = new GeometryGroup();
-        var commitDelayedGeom = new GeometryGroup();
-
-        var seenRequestX = new HashSet<int>();
-        var seenCommitX = new HashSet<int>();
-        var seenCommitDelayedX = new HashSet<int>();
+        seenRequestX.Clear();
+        seenCommitX.Clear();
+        seenCommitDelayedX.Clear();
 
         for (int i = startIdx; i < frameActivities.Count; i++)
         {
@@ -1169,13 +1289,10 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             {
                 if (seenRequestX.Add(px))
                 {
-                    requestGeom.Children.Add(new RectangleGeometry
-                    {
-                        Rect = new Rect(x - 0.75, 0, 1.5, height)
-                    });
+                    ds.FillRectangle((float)(x - 0.75), 0, 1.5f, (float)height, palette.FrameRequestColor);
                 }
 
-                visualItems.Add(new VisualHitItem
+                framesVisualItems.Add(new VisualHitItem
                 {
                     Lane = 0,
                     X1 = x - 0.75,
@@ -1194,24 +1311,18 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 {
                     if (seenCommitDelayedX.Add(px))
                     {
-                        commitDelayedGeom.Children.Add(new RectangleGeometry
-                        {
-                            Rect = new Rect(x - 1, 0, 2, height)
-                        });
+                        ds.FillRectangle((float)(x - 1.0), 0, 2.0f, (float)height, palette.FrameCommitDelayedColor);
                     }
                 }
                 else
                 {
                     if (seenCommitX.Add(px))
                     {
-                        commitGeom.Children.Add(new RectangleGeometry
-                        {
-                            Rect = new Rect(x - 1, 0, 2, height)
-                        });
+                        ds.FillRectangle((float)(x - 1.0), 0, 2.0f, (float)height, palette.FrameCommitColor);
                     }
                 }
 
-                visualItems.Add(new VisualHitItem
+                framesVisualItems.Add(new VisualHitItem
                 {
                     Lane = 0,
                     X1 = x - 1,
@@ -1226,57 +1337,14 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             }
         }
 
-        if (requestGeom.Children.Count > 0)
-        {
-            var requestPath = new ShapePath
-            {
-                Data = requestGeom,
-                Fill = FrameRequestBrush,
-                Opacity = 0.5,
-                IsHitTestVisible = false
-            };
-            FramesCanvas.Children.Add(requestPath);
-        }
-
-        if (commitGeom.Children.Count > 0)
-        {
-            var commitPath = new ShapePath
-            {
-                Data = commitGeom,
-                Fill = FrameCommitBrush,
-                IsHitTestVisible = false
-            };
-            FramesCanvas.Children.Add(commitPath);
-        }
-
-        if (commitDelayedGeom.Children.Count > 0)
-        {
-            var commitDelayedPath = new ShapePath
-            {
-                Data = commitDelayedGeom,
-                Fill = FrameCommitDelayedBrush,
-                IsHitTestVisible = false
-            };
-            FramesCanvas.Children.Add(commitDelayedPath);
-        }
-
         if (selectedActivity is not null && (selectedActivity.IsFrameRequest || selectedActivity.IsFrameCommit))
         {
-            var selItem = visualItems.FirstOrDefault(v => ReferenceEquals(v.Dominant, selectedActivity)
+            var selItem = framesVisualItems.FirstOrDefault(v => ReferenceEquals(v.Dominant, selectedActivity)
                 || (selectedActivity.EndMs >= v.StartMs && selectedActivity.StartMs <= v.EndMs));
             if (selItem is not null)
             {
                 double markerW = selItem.X2 - selItem.X1;
-                var highlight = new Border
-                {
-                    Width = markerW,
-                    Height = height,
-                    Background = AttentionBrush,
-                    IsHitTestVisible = false
-                };
-                Canvas.SetLeft(highlight, selItem.X1);
-                Canvas.SetTop(highlight, 0);
-                FramesCanvas.Children.Add(highlight);
+                ds.FillRectangle((float)selItem.X1, 0, (float)markerW, (float)height, palette.AttentionColor);
             }
         }
     }
@@ -1386,32 +1454,33 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         };
         Grid.SetRow(border, 1);
 
-        var canvas = new Canvas
+        var canvasControl = new CanvasControl
         {
             Height = Math.Max(30, trackHeight - 2),
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent)
+            ClearColor = Color.FromArgb(0, 0, 0, 0)
         };
-        canvas.PointerWheelChanged += Tracks_PointerWheelChanged;
-        canvas.SizeChanged += TrackCanvas_SizeChanged;
-        canvas.PointerPressed += Track_PointerPressed;
-        canvas.PointerMoved += Track_PointerMoved;
-        canvas.PointerReleased += Track_PointerReleased;
-        canvas.PointerCaptureLost += Track_PointerCaptureLost;
-        canvas.PointerExited += Track_PointerExited;
+        canvasControl.Draw += (s, args) => DrawThreadTrack(track, s, args);
+        canvasControl.PointerWheelChanged += Tracks_PointerWheelChanged;
+        canvasControl.SizeChanged += (s, e) => canvasControl.Invalidate();
+        canvasControl.PointerPressed += Track_PointerPressed;
+        canvasControl.PointerMoved += Track_PointerMoved;
+        canvasControl.PointerReleased += Track_PointerReleased;
+        canvasControl.PointerCaptureLost += Track_PointerCaptureLost;
+        canvasControl.PointerExited += Track_PointerExited;
 
-        border.Child = canvas;
+        border.Child = canvasControl;
         container.Children.Add(headerBorder);
         container.Children.Add(border);
 
         track.Container = container;
         track.HeaderBorder = headerBorder;
         track.Border = border;
-        track.Canvas = canvas;
+        track.CanvasControl = canvasControl;
         track.ChevronIcon = chevron;
         track.CountText = countText;
 
-        canvasVisualItems[canvas] = new List<VisualHitItem>();
+        canvasTrackMap[canvasControl] = track;
 
         header.PointerPressed += (s, e) =>
         {
@@ -1420,7 +1489,7 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             border.Visibility = track.IsCollapsed ? Visibility.Collapsed : Visibility.Visible;
             if (!track.IsCollapsed)
             {
-                RenderThreadTrack(track);
+                track.CanvasControl.Invalidate();
             }
             e.Handled = true;
         };
@@ -1428,68 +1497,26 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         ThreadTracksPanel.Children.Add(container);
     }
 
-    private void RenderThreadTrack(ThreadTrackInfo track)
+    private void DrawThreadTrack(ThreadTrackInfo track, CanvasControl canvas, CanvasDrawEventArgs args)
     {
-        var canvas = track.Canvas;
-        canvas.Children.Clear();
-        if (!canvasVisualItems.TryGetValue(canvas, out var visualItems))
-        {
-            visualItems = new List<VisualHitItem>();
-            canvasVisualItems[canvas] = visualItems;
-        }
-        visualItems.Clear();
+        var ds = args.DrawingSession;
+        track.VisualItems.Clear();
 
         var width = canvas.ActualWidth;
         var height = canvas.ActualHeight;
         var activities = track.Activities;
         if (width <= 0 || height <= 0 || activities.Count == 0) return;
 
+        var palette = CurrentPalette;
         double visibleDuration = Math.Max(0.001, viewEndMs - viewStartMs);
         double bufferMarginMs = 0.5 * visibleDuration;
         double renderStartMs = Math.Max(totalMinMs, viewStartMs - bufferMarginMs);
         double renderEndMs = Math.Min(totalMaxMs, viewEndMs + bufferMarginMs);
 
-        int startIdx = FindFirstStartIndex(activities, renderStartMs - track.MaxDuration);
-        if (startIdx >= activities.Count) return;
-
-        var laneDurationMap = new Dictionary<(int depth, string bucket), List<TimelineActivity>>();
-        var laneInstantMap = new Dictionary<(int depth, string bucket), List<TimelineActivity>>();
-
-        for (int i = startIdx; i < activities.Count; i++)
-        {
-            var act = activities[i];
-            if (act.StartMs > renderEndMs) break;
-            if (act.EndMs < renderStartMs) continue;
-
-            var key = (act.Depth, act.Bucket);
-            if (act.IsDuration)
-            {
-                if (!laneDurationMap.TryGetValue(key, out var dList))
-                {
-                    dList = new List<TimelineActivity>();
-                    laneDurationMap[key] = dList;
-                }
-                dList.Add(act);
-            }
-            else
-            {
-                if (!laneInstantMap.TryGetValue(key, out var iList))
-                {
-                    iList = new List<TimelineActivity>();
-                    laneInstantMap[key] = iList;
-                }
-                iList.Add(act);
-            }
-        }
-
-        if (laneDurationMap.Count == 0 && laneInstantMap.Count == 0 && (!showLockRegions || track.LockRegions.Count == 0)) return;
-
-        // 1. Shaded background lock regions (underneath canvas behind all foreground events)
+        // 1. Shaded background lock regions
         if (showLockRegions && track.LockRegions.Count > 0)
         {
-            var lockRegionGeom = new GeometryGroup();
             int lockStartIdx = FindFirstStartIndex(track.LockRegions, renderStartMs - 1000);
-
             for (int li = lockStartIdx; li < track.LockRegions.Count; li++)
             {
                 var lockReg = track.LockRegions[li];
@@ -1504,12 +1531,9 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 double x2 = Math.Clamp(rawX2, 0, width);
                 double w = Math.Max(2.0, x2 - x1);
 
-                lockRegionGeom.Children.Add(new RectangleGeometry
-                {
-                    Rect = new Rect(x1, 0, w, height)
-                });
+                ds.FillRectangle((float)x1, 0, (float)w, (float)height, palette.LockRegionFill);
 
-                visualItems.Add(new VisualHitItem
+                track.VisualItems.Add(new VisualHitItem
                 {
                     Lane = -1,
                     X1 = x1,
@@ -1522,60 +1546,24 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                     IsDuration = true
                 });
             }
-
-            AddBatchShapePath(canvas, lockRegionGeom, LockRegionFill, null);
         }
 
-        var xamlDurationGeom = new GeometryGroup();
-        var xamlClusterGeom = new GeometryGroup();
-        var xamlTicksGeom = new GeometryGroup();
-        var compDurationGeom = new GeometryGroup();
-        var compClusterGeom = new GeometryGroup();
-        var compTicksGeom = new GeometryGroup();
-        var otherDurationGeom = new GeometryGroup();
-        var otherClusterGeom = new GeometryGroup();
-        var otherTicksGeom = new GeometryGroup();
-        var idleDurationGeom = new GeometryGroup();
-        var idleClusterGeom = new GeometryGroup();
-        var idleHatchGeom = new GeometryGroup();
-        var lockSolidGeom = new GeometryGroup();
-        var lockDashedGeom = new GeometryGroup();
-
-        int textCount = 0;
-        const int maxTextElements = 75;
-        var pendingLabels = new List<(TextBlock Label, double Left, double Top)>();
-
-        foreach (var ((depth, bucket), laneActs) in laneDurationMap)
+        // 2. Duration and Clustered Events per lane
+        int maxDepth = track.MaxDepth;
+        for (int d = 0; d <= maxDepth && d < track.LaneDurations.Length; d++)
         {
-            double y = depth * (LaneHeight + LaneSpacing) + TrackTopPadding;
-            var targetDurationGeom = bucket switch
-            {
-                "Xaml" => xamlDurationGeom,
-                "Composition" => compDurationGeom,
-                "Idle" => idleDurationGeom,
-                _ => otherDurationGeom
-            };
-            var targetClusterGeom = bucket switch
-            {
-                "Xaml" => xamlClusterGeom,
-                "Composition" => compClusterGeom,
-                "Idle" => idleClusterGeom,
-                _ => otherClusterGeom
-            };
-            var strokeBrush = bucket switch
-            {
-                "Xaml" => XamlBrush,
-                "Composition" => CompBrush,
-                "Idle" => IdleWaitBrush,
-                _ => OtherBrush
-            };
+            var laneActs = track.LaneDurations[d];
+            if (laneActs.Count == 0) continue;
 
-            var blocks = new List<VisualHitItem>();
+            double y = d * (LaneHeight + LaneSpacing) + TrackTopPadding;
+            int startIdx = FindFirstStartIndex(laneActs, renderStartMs - track.MaxDuration);
+            if (startIdx >= laneActs.Count) continue;
 
             double curClusterX1 = double.NaN;
             double curClusterX2 = double.NaN;
             double curClusterStartMs = 0;
             double curClusterEndMs = 0;
+            string curClusterBucket = "";
             TimelineActivity? dominant = null;
             double maxDur = 0;
             int clusterCount = 0;
@@ -1583,17 +1571,67 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             void FlushCluster()
             {
                 if (double.IsNaN(curClusterX1)) return;
+                double renderW = Math.Max(2.0, curClusterX2 - curClusterX1);
+                var (stroke, fill) = GetBucketColors(curClusterBucket, palette);
 
-                blocks.Add(new VisualHitItem
+                if (clusterCount > 1)
                 {
-                    Lane = depth,
+                    // Clustered micro-events: solid fill with bucket color
+                    ds.FillRectangle((float)curClusterX1, (float)y, (float)renderW, (float)LaneHeight, stroke);
+                }
+                else
+                {
+                    // Individual duration event: background fill + outline stroke
+                    ds.FillRectangle((float)curClusterX1, (float)y, (float)renderW, (float)LaneHeight, fill);
+                    ds.DrawRectangle((float)curClusterX1, (float)y, (float)renderW, (float)LaneHeight, stroke, 1.0f);
+
+                    // Idle hatch diagonal lines
+                    if (curClusterBucket == "Idle")
+                    {
+                        float h = (float)LaneHeight;
+                        float step = 8.0f;
+                        for (float p = (float)(curClusterX1 - h); p <= (float)(curClusterX1 + renderW); p += step)
+                        {
+                            float xStart = p;
+                            float yStart = (float)y;
+                            float xEnd = p + h;
+                            float yEnd = (float)(y + h);
+
+                            if (xStart < (float)curClusterX1) { yStart += ((float)curClusterX1 - xStart); xStart = (float)curClusterX1; }
+                            if (xEnd > (float)(curClusterX1 + renderW)) { yEnd -= (xEnd - (float)(curClusterX1 + renderW)); xEnd = (float)(curClusterX1 + renderW); }
+
+                            if (xEnd > xStart && yEnd > yStart)
+                            {
+                                ds.DrawLine(xStart, yStart, xEnd, yEnd, stroke, 1.0f);
+                            }
+                        }
+                    }
+
+                    // DirectWrite Text Label
+                    if (renderW >= 36 && curClusterX2 > 0 && curClusterX1 < width && dominant is not null)
+                    {
+                        double labelX = Math.Max(curClusterX1 + 3, 2);
+                        double visibleRight = Math.Min(curClusterX1 + renderW - 3, width - 2);
+                        double labelMaxWidth = Math.Max(0, visibleRight - labelX);
+
+                        if (labelMaxWidth >= 20)
+                        {
+                            string labelText = $"{dominant.Name} ({dominant.DurationMs:N1} ms)";
+                            ds.DrawText(labelText, new Rect(labelX, y + 2, labelMaxWidth, LaneHeight - 4), stroke, barTextFormat);
+                        }
+                    }
+                }
+
+                track.VisualItems.Add(new VisualHitItem
+                {
+                    Lane = d,
                     X1 = curClusterX1,
                     X2 = curClusterX2,
                     Y = y,
                     StartMs = curClusterStartMs,
                     EndMs = curClusterEndMs,
                     ClusterCount = clusterCount,
-                    Dominant = dominant!,
+                    Dominant = dominant,
                     IsDuration = true
                 });
 
@@ -1603,8 +1641,12 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 maxDur = 0;
             }
 
-            foreach (var act in laneActs)
+            for (int i = startIdx; i < laneActs.Count; i++)
             {
+                var act = laneActs[i];
+                if (act.StartMs > renderEndMs) break;
+                if (act.EndMs < renderStartMs) continue;
+
                 double rawX1 = (act.StartMs - viewStartMs) / visibleDuration * width;
                 double rawX2 = (act.EndMs - viewStartMs) / visibleDuration * width;
                 if (double.IsNaN(rawX1) || double.IsInfinity(rawX1) || double.IsNaN(rawX2) || double.IsInfinity(rawX2)) continue;
@@ -1617,10 +1659,9 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 double w = Math.Max(2.0, x2 - x1);
                 x2 = x1 + w;
 
-                // Add visual hit item for this SPECIFIC activity
-                visualItems.Add(new VisualHitItem
+                track.VisualItems.Add(new VisualHitItem
                 {
-                    Lane = depth,
+                    Lane = d,
                     X1 = x1,
                     X2 = x2,
                     Y = y,
@@ -1635,18 +1676,16 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 {
                     FlushCluster();
 
-                    blocks.Add(new VisualHitItem
-                    {
-                        Lane = depth,
-                        X1 = x1,
-                        X2 = x2,
-                        Y = y,
-                        StartMs = act.StartMs,
-                        EndMs = act.EndMs,
-                        ClusterCount = 1,
-                        Dominant = act,
-                        IsDuration = true
-                    });
+                    curClusterX1 = x1;
+                    curClusterX2 = x2;
+                    curClusterStartMs = act.StartMs;
+                    curClusterEndMs = act.EndMs;
+                    curClusterBucket = act.Bucket;
+                    dominant = act;
+                    maxDur = act.DurationMs;
+                    clusterCount = 1;
+
+                    FlushCluster();
                 }
                 else
                 {
@@ -1656,11 +1695,12 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                         curClusterX2 = x2;
                         curClusterStartMs = act.StartMs;
                         curClusterEndMs = act.EndMs;
+                        curClusterBucket = act.Bucket;
                         dominant = act;
                         maxDur = act.DurationMs;
                         clusterCount = 1;
                     }
-                    else if (x1 <= curClusterX2 + 1.5)
+                    else if (x1 <= curClusterX2 + 1.5 && act.Bucket == curClusterBucket)
                     {
                         curClusterX2 = Math.Max(curClusterX2, x2);
                         if (act.EndMs > curClusterEndMs) curClusterEndMs = act.EndMs;
@@ -1679,6 +1719,7 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                         curClusterX2 = x2;
                         curClusterStartMs = act.StartMs;
                         curClusterEndMs = act.EndMs;
+                        curClusterBucket = act.Bucket;
                         dominant = act;
                         maxDur = act.DurationMs;
                         clusterCount = 1;
@@ -1686,129 +1727,32 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 }
             }
             FlushCluster();
-
-            // Render blocks with a 1px background divider between adjacent blocks
-            for (int bIdx = 0; bIdx < blocks.Count; bIdx++)
-            {
-                var block = blocks[bIdx];
-
-                double bX1 = block.X1;
-                double bX2 = block.X2;
-                bool hasAdjacentNext = (bIdx + 1 < blocks.Count) && (blocks[bIdx + 1].X1 <= bX2 + 1.5);
-
-                double renderW;
-                if (hasAdjacentNext)
-                {
-                    double targetX2 = Math.Min(bX2, blocks[bIdx + 1].X1 - 1.0);
-                    renderW = Math.Max(2.0, targetX2 - bX1);
-                }
-                else
-                {
-                    renderW = Math.Max(2.0, bX2 - bX1);
-                }
-
-                bool isCluster = block.ClusterCount > 1;
-
-                if (isCluster)
-                {
-                    targetClusterGeom.Children.Add(new RectangleGeometry
-                    {
-                        Rect = new Rect(bX1, y, renderW, LaneHeight)
-                    });
-                }
-                else
-                {
-                    targetDurationGeom.Children.Add(new RectangleGeometry
-                    {
-                        Rect = new Rect(bX1, y, renderW, LaneHeight)
-                    });
-
-                    if (bucket == "Idle")
-                    {
-                        double h = LaneHeight;
-                        double step = 8.0;
-                        double startP = bX1 - h;
-                        double endP = bX1 + renderW;
-
-                        for (double p = startP; p <= endP; p += step)
-                        {
-                            double xStart = p;
-                            double yStart = y;
-                            double xEnd = p + h;
-                            double yEnd = y + h;
-
-                            if (xStart < bX1)
-                            {
-                                yStart = y + (bX1 - xStart);
-                                xStart = bX1;
-                            }
-
-                            if (xEnd > bX1 + renderW)
-                            {
-                                yEnd = y + h - (xEnd - (bX1 + renderW));
-                                xEnd = bX1 + renderW;
-                            }
-
-                            if (xEnd > xStart && yEnd > yStart)
-                            {
-                                idleHatchGeom.Children.Add(new LineGeometry
-                                {
-                                    StartPoint = new Point(xStart, yStart),
-                                    EndPoint = new Point(xEnd, yEnd)
-                                });
-                            }
-                        }
-                    }
-
-                    if (renderW >= 36 && textCount < maxTextElements && bX2 > 0 && bX1 < width)
-                    {
-                        double labelX = Math.Max(bX1 + 3, 2);
-                        double visibleRight = Math.Min(bX1 + renderW - 3, width - 2);
-                        double labelMaxWidth = Math.Max(0, visibleRight - labelX);
-
-                        if (labelMaxWidth >= 20 && block.Dominant is not null)
-                        {
-                            string labelText = $"{block.Dominant.Name} ({block.Dominant.DurationMs:N1} ms)";
-
-                            var label = new TextBlock
-                            {
-                                Text = labelText,
-                                FontSize = 10,
-                                Foreground = strokeBrush,
-                                TextTrimming = TextTrimming.CharacterEllipsis,
-                                IsHitTestVisible = false,
-                                MaxWidth = labelMaxWidth
-                            };
-                            pendingLabels.Add((label, labelX, y + 1));
-                            textCount++;
-                        }
-                    }
-                }
-            }
         }
 
-        foreach (var ((depth, bucket), laneActs) in laneInstantMap)
+        // 3. Instant events per lane
+        for (int d = 0; d <= maxDepth && d < track.LaneInstants.Length; d++)
         {
-            double y = depth * (LaneHeight + LaneSpacing) + TrackTopPadding;
-            var targetTicksGeom = bucket switch
-            {
-                "Xaml" => xamlTicksGeom,
-                "Composition" => compTicksGeom,
-                _ => otherTicksGeom
-            };
+            var laneInstants = track.LaneInstants[d];
+            if (laneInstants.Count == 0) continue;
+
+            double y = d * (LaneHeight + LaneSpacing) + TrackTopPadding;
+            int startIdx = FindFirstStartIndex(laneInstants, renderStartMs - 100);
+            if (startIdx >= laneInstants.Count) continue;
 
             double lastTickX = double.NegativeInfinity;
 
-            foreach (var act in laneActs)
+            for (int i = startIdx; i < laneInstants.Count; i++)
             {
-                double x = (act.StartMs - viewStartMs) / visibleDuration * width;
-                if (double.IsNaN(x) || double.IsInfinity(x)) continue;
-                if (x < -5 || x > width + 5) continue;
+                var act = laneInstants[i];
+                if (act.StartMs > renderEndMs) break;
+                if (act.EndMs < renderStartMs) continue;
 
-                // Always add every instant event so each one can be individually hit-tested
-                visualItems.Add(new VisualHitItem
+                double x = (act.StartMs - viewStartMs) / visibleDuration * width;
+                if (double.IsNaN(x) || double.IsInfinity(x) || x < -5 || x > width + 5) continue;
+
+                track.VisualItems.Add(new VisualHitItem
                 {
-                    Lane = depth,
+                    Lane = d,
                     X1 = x - 1,
                     X2 = x + 1,
                     Y = y,
@@ -1822,34 +1766,12 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 if (x - lastTickX < 1.5) continue;
                 lastTickX = x;
 
-                targetTicksGeom.Children.Add(new RectangleGeometry
-                {
-                    Rect = new Rect(x - 1, y, 2, LaneHeight)
-                });
+                var (stroke, _) = GetBucketColors(act.Bucket, palette);
+                ds.FillRectangle((float)(x - 1), (float)y, 2.0f, (float)LaneHeight, stroke);
             }
         }
 
-        AddBatchShapePath(canvas, xamlDurationGeom, XamlFill, XamlBrush);
-        AddBatchShapePath(canvas, xamlClusterGeom, XamlBrush, XamlBrush);
-        AddBatchShapePath(canvas, xamlTicksGeom, XamlBrush, XamlBrush);
-        AddBatchShapePath(canvas, compDurationGeom, CompFill, CompBrush);
-        AddBatchShapePath(canvas, compClusterGeom, CompBrush, CompBrush);
-        AddBatchShapePath(canvas, compTicksGeom, CompBrush, CompBrush);
-        AddBatchShapePath(canvas, otherDurationGeom, OtherFill, OtherBrush);
-        AddBatchShapePath(canvas, otherClusterGeom, OtherBrush, OtherBrush);
-        AddBatchShapePath(canvas, otherTicksGeom, OtherBrush, OtherBrush);
-        AddBatchShapePath(canvas, idleDurationGeom, IdleWaitFill, IdleWaitBrush);
-        AddBatchShapePath(canvas, idleClusterGeom, IdleWaitBrush, IdleWaitBrush);
-        AddBatchShapePath(canvas, idleHatchGeom, null, IdleWaitBrush);
-
-        foreach (var (lbl, left, top) in pendingLabels)
-        {
-            Canvas.SetLeft(lbl, left);
-            Canvas.SetTop(lbl, top);
-            Canvas.SetZIndex(lbl, 10);
-            canvas.Children.Add(lbl);
-        }
-
+        // 4. Selection Highlight
         if (selectedLockRegion is not null && selectedLockRegion.ThreadId == track.ThreadId)
         {
             double rawX1 = (selectedLockRegion.StartMs - viewStartMs) / visibleDuration * width;
@@ -1859,54 +1781,22 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 double x1 = Math.Clamp(rawX1, -5, width + 5);
                 double x2 = Math.Clamp(rawX2, -5, width + 5);
                 double w = Math.Max(2.0, x2 - x1);
-                var highlight = new Border
-                {
-                    Width = Math.Clamp(w + 2, 2, width + 100),
-                    Height = height,
-                    BorderBrush = AttentionBrush,
-                    BorderThickness = new Thickness(1),
-                    IsHitTestVisible = false
-                };
-                Canvas.SetLeft(highlight, x1 - 1);
-                Canvas.SetTop(highlight, 0);
-                canvas.Children.Add(highlight);
+                ds.DrawRectangle((float)(x1 - 1), 0, (float)(w + 2), (float)height, palette.AttentionColor, 1.5f);
             }
         }
         else if (selectedActivity is not null && selectedActivity.ThreadId == track.ThreadId)
         {
-            var selItem = visualItems.FirstOrDefault(v => ReferenceEquals(v.Dominant, selectedActivity))
-                ?? visualItems.FirstOrDefault(v => selectedActivity.EndMs >= v.StartMs && selectedActivity.StartMs <= v.EndMs && selectedActivity.Depth == v.Lane);
-
-            if (selItem is not null)
+            double rawX1 = (selectedActivity.StartMs - viewStartMs) / visibleDuration * width;
+            double rawX2 = (selectedActivity.EndMs - viewStartMs) / visibleDuration * width;
+            if (rawX2 >= 0 && rawX1 <= width)
             {
-                var highlight = new Border
-                {
-                    Width = Math.Clamp(selItem.X2 - selItem.X1 + 2, 2, width + 100),
-                    Height = LaneHeight + 2,
-                    BorderBrush = AttentionBrush,
-                    BorderThickness = new Thickness(1),
-                    IsHitTestVisible = false
-                };
-                Canvas.SetLeft(highlight, selItem.X1 - 1);
-                Canvas.SetTop(highlight, selItem.Y - 1);
-                canvas.Children.Add(highlight);
+                double x1 = Math.Clamp(rawX1, -5, width + 5);
+                double x2 = Math.Clamp(rawX2, -5, width + 5);
+                double w = Math.Max(selectedActivity.IsDuration ? 2.0 : 3.0, x2 - x1);
+                double y = selectedActivity.Depth * (LaneHeight + LaneSpacing) + TrackTopPadding;
+                ds.DrawRectangle((float)(x1 - 1), (float)(y - 1), (float)(w + 2), (float)(LaneHeight + 2), palette.AttentionColor, 1.5f);
             }
         }
-    }
-
-    private static void AddBatchShapePath(Canvas canvas, GeometryGroup geometryGroup, Brush? fill, Brush? stroke, DoubleCollection? strokeDashArray = null, double strokeThickness = 1.0)
-    {
-        if (geometryGroup.Children.Count == 0) return;
-        var path = new ShapePath
-        {
-            Data = geometryGroup,
-            Fill = fill,
-            Stroke = stroke,
-            StrokeThickness = strokeThickness,
-            StrokeDashArray = strokeDashArray,
-            IsHitTestVisible = false
-        };
-        canvas.Children.Add(path);
     }
 
     #endregion
@@ -1944,8 +1834,8 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
 
     private void Track_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        var canvas = (Canvas)sender;
-        var pt = e.GetCurrentPoint(canvas);
+        var element = (UIElement)sender;
+        var pt = e.GetCurrentPoint(element);
 
         Focus(FocusState.Programmatic);
         HideHover();
@@ -1956,14 +1846,14 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             panStartPoint = e.GetCurrentPoint(TracksScrollView).Position;
             panLastPoint = panStartPoint;
             panStartVOffset = TracksScrollView.VerticalOffset;
-            canvas.CapturePointer(e.Pointer);
+            element.CapturePointer(e.Pointer);
             e.Handled = true;
         }
     }
 
     private void Track_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        var canvas = (Canvas)sender;
+        var element = (UIElement)sender;
         if (isPanning)
         {
             HideHover();
@@ -1989,16 +1879,16 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             return;
         }
 
-        UpdateHover(canvas, e);
+        UpdateHover(element, e);
     }
 
     private void Track_PointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        var canvas = (Canvas)sender;
+        var element = (UIElement)sender;
         if (isPanning)
         {
             isPanning = false;
-            canvas.ReleasePointerCapture(e.Pointer);
+            element.ReleasePointerCapture(e.Pointer);
 
             if (frameRenderPending)
             {
@@ -2009,15 +1899,15 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             var pt = e.GetCurrentPoint(TracksScrollView).Position;
             if (Math.Abs(pt.X - panStartPoint.X) < 4 && Math.Abs(pt.Y - panStartPoint.Y) < 4)
             {
-                var canvasPt = e.GetCurrentPoint(canvas).Position;
-                HitTestActivity(canvas, canvasPt);
+                var canvasPt = e.GetCurrentPoint(element).Position;
+                HitTestActivity(element, canvasPt);
             }
             e.Handled = true;
         }
         else
         {
-            var pt = e.GetCurrentPoint(canvas).Position;
-            HitTestActivity(canvas, pt);
+            var pt = e.GetCurrentPoint(element).Position;
+            HitTestActivity(element, pt);
         }
     }
 
@@ -2040,23 +1930,22 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         HideHover();
     }
 
-    private VisualHitItem? FindVisualItemAtPoint(Canvas canvas, Point clickPos)
+    private VisualHitItem? FindVisualItemAtPoint(UIElement sender, Point clickPos)
     {
-        if (!canvasVisualItems.TryGetValue(canvas, out var items) || items.Count == 0) return null;
-
         double mouseX = clickPos.X;
         double mouseY = clickPos.Y;
 
-        if (ReferenceEquals(canvas, FramesCanvas))
+        if (ReferenceEquals(sender, framesCanvasControl))
         {
-            if (mouseY < 0 || mouseY > canvas.ActualHeight) return null;
+            if (framesCanvasControl is null || mouseY < 0 || mouseY > framesCanvasControl.ActualHeight) return null;
+            if (framesVisualItems.Count == 0) return null;
 
             VisualHitItem? bestItem = null;
             double bestDist = double.MaxValue;
 
-            for (int i = 0; i < items.Count; i++)
+            for (int i = 0; i < framesVisualItems.Count; i++)
             {
-                var item = items[i];
+                var item = framesVisualItems[i];
                 if (mouseX >= item.X1 - 4 && mouseX <= item.X2 + 4)
                 {
                     double midX = (item.X1 + item.X2) / 2.0;
@@ -2071,80 +1960,85 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             return bestItem;
         }
 
-        // Thread Track Canvas
-        double width = canvas.ActualWidth;
-        if (width <= 0) return null;
-        double duration = Math.Max(0.001, viewEndMs - viewStartMs);
-        double mouseMs = viewStartMs + (mouseX / width) * duration;
-
-        int hoveredDepth = (int)((mouseY - TrackTopPadding) / (LaneHeight + LaneSpacing));
-        VisualHitItem? bestExact = null;
-        VisualHitItem? bestNearby = null;
-        double bestDistPx = double.MaxValue;
-        double bestTimeDist = double.MaxValue;
-
-        if (hoveredDepth >= 0)
+        if (sender is CanvasControl cc && canvasTrackMap.TryGetValue(cc, out var track))
         {
-            double laneTop = hoveredDepth * (LaneHeight + LaneSpacing) + TrackTopPadding;
-            if (mouseY >= laneTop && mouseY <= laneTop + LaneHeight)
+            var items = track.VisualItems;
+            if (items.Count == 0) return null;
+
+            double width = cc.ActualWidth;
+            if (width <= 0) return null;
+            double duration = Math.Max(0.001, viewEndMs - viewStartMs);
+            double mouseMs = viewStartMs + (mouseX / width) * duration;
+
+            int hoveredDepth = (int)((mouseY - TrackTopPadding) / (LaneHeight + LaneSpacing));
+            VisualHitItem? bestExact = null;
+            VisualHitItem? bestNearby = null;
+            double bestDistPx = double.MaxValue;
+            double bestTimeDist = double.MaxValue;
+
+            if (hoveredDepth >= 0)
             {
-                for (int i = 0; i < items.Count; i++)
+                double laneTop = hoveredDepth * (LaneHeight + LaneSpacing) + TrackTopPadding;
+                if (mouseY >= laneTop && mouseY <= laneTop + LaneHeight)
                 {
-                    var item = items[i];
-                    if (item.Lane != hoveredDepth) continue;
-
-                    // Direct timestamp hit for duration events
-                    if (item.IsDuration && mouseMs >= item.StartMs && mouseMs <= item.EndMs)
+                    for (int i = 0; i < items.Count; i++)
                     {
-                        double span = item.EndMs - item.StartMs;
-                        if (span < bestTimeDist)
+                        var item = items[i];
+                        if (item.Lane != hoveredDepth) continue;
+
+                        // Direct timestamp hit for duration events
+                        if (item.IsDuration && mouseMs >= item.StartMs && mouseMs <= item.EndMs)
                         {
-                            bestTimeDist = span;
-                            bestExact = item;
+                            double span = item.EndMs - item.StartMs;
+                            if (span < bestTimeDist)
+                            {
+                                bestTimeDist = span;
+                                bestExact = item;
+                            }
+                            continue;
                         }
-                        continue;
-                    }
 
-                    if (bestExact is not null) continue;
+                        if (bestExact is not null) continue;
 
-                    double left = item.IsDuration ? item.X1 : item.X1 - 2;
-                    double right = item.IsDuration ? item.X2 : item.X2 + 2;
+                        double left = item.IsDuration ? item.X1 : item.X1 - 2;
+                        double right = item.IsDuration ? item.X2 : item.X2 + 2;
 
-                    if (mouseX >= left && mouseX <= right)
-                    {
-                        double midX = (item.X1 + item.X2) / 2.0;
-                        double dist = Math.Abs(mouseX - midX);
-                        if (dist < bestDistPx)
+                        if (mouseX >= left && mouseX <= right)
                         {
-                            bestDistPx = dist;
-                            bestNearby = item;
+                            double midX = (item.X1 + item.X2) / 2.0;
+                            double dist = Math.Abs(mouseX - midX);
+                            if (dist < bestDistPx)
+                            {
+                                bestDistPx = dist;
+                                bestNearby = item;
+                            }
                         }
-                    }
-                    else if (bestNearby is null && mouseX >= left - 2 && mouseX <= right + 2)
-                    {
-                        double midX = (item.X1 + item.X2) / 2.0;
-                        double dist = Math.Abs(mouseX - midX);
-                        if (dist < bestDistPx)
+                        else if (bestNearby is null && mouseX >= left - 2 && mouseX <= right + 2)
                         {
-                            bestDistPx = dist;
-                            bestNearby = item;
+                            double midX = (item.X1 + item.X2) / 2.0;
+                            double dist = Math.Abs(mouseX - midX);
+                            if (dist < bestDistPx)
+                            {
+                                bestDistPx = dist;
+                                bestNearby = item;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        var result = bestExact ?? bestNearby;
-        if (result is not null) return result;
+            var result = bestExact ?? bestNearby;
+            if (result is not null) return result;
 
-        if (showLockRegions)
-        {
-            for (int i = 0; i < items.Count; i++)
+            if (showLockRegions)
             {
-                var it = items[i];
-                if (it.LockRegion is not null && mouseMs >= it.StartMs && mouseMs <= it.EndMs)
+                for (int i = 0; i < items.Count; i++)
                 {
-                    return it;
+                    var it = items[i];
+                    if (it.LockRegion is not null && mouseMs >= it.StartMs && mouseMs <= it.EndMs)
+                    {
+                        return it;
+                    }
                 }
             }
         }
@@ -2152,7 +2046,7 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         return null;
     }
 
-    private void UpdateHover(Canvas canvas, PointerRoutedEventArgs e)
+    private void UpdateHover(UIElement sender, PointerRoutedEventArgs e)
     {
         if (isPanning || allActivities.Count == 0)
         {
@@ -2160,8 +2054,8 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             return;
         }
 
-        var pt = e.GetCurrentPoint(canvas);
-        var item = FindVisualItemAtPoint(canvas, pt.Position);
+        var pt = e.GetCurrentPoint(sender);
+        var item = FindVisualItemAtPoint(sender, pt.Position);
 
         if (item is null)
         {
@@ -2169,20 +2063,21 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
             return;
         }
 
-        ShowHover(canvas, item, e);
+        ShowHover(sender, item, e);
     }
 
-    private void ShowHover(Canvas canvas, VisualHitItem item, PointerRoutedEventArgs e)
+    private void ShowHover(UIElement sender, VisualHitItem item, PointerRoutedEventArgs e)
     {
         try
         {
-            var transform = canvas.TransformToVisual(HoverOverlayCanvas);
+            var transform = sender.TransformToVisual(HoverOverlayCanvas);
+            double senderH = (sender as FrameworkElement)?.ActualHeight ?? 0;
 
             if (item.LockRegion is not null)
             {
                 var overlayTop = transform.TransformPoint(new Point(item.X1, 0));
                 double w = Math.Max(2.0, item.X2 - item.X1);
-                double trackH = canvas.ActualHeight > 0 ? canvas.ActualHeight : 44;
+                double trackH = senderH > 0 ? senderH : 44;
 
                 Canvas.SetLeft(HoverHighlight, overlayTop.X - 1);
                 Canvas.SetTop(HoverHighlight, overlayTop.Y);
@@ -2191,11 +2086,11 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
                 HoverHighlight.Background = null;
                 HoverHighlight.BorderThickness = new Thickness(1);
             }
-            else if (ReferenceEquals(canvas, FramesCanvas))
+            else if (ReferenceEquals(sender, framesCanvasControl))
             {
                 var overlayTop = transform.TransformPoint(new Point(item.X1, 0));
                 double markerW = item.X2 - item.X1;
-                double trackH = canvas.ActualHeight > 0 ? canvas.ActualHeight : 34;
+                double trackH = senderH > 0 ? senderH : 34;
 
                 Canvas.SetLeft(HoverHighlight, overlayTop.X);
                 Canvas.SetTop(HoverHighlight, overlayTop.Y);
@@ -2385,9 +2280,9 @@ public sealed partial class TimelineView : UserControl, IInteractionTrackerOwner
         }
     }
 
-    private void HitTestActivity(Canvas canvas, Point clickPos)
+    private void HitTestActivity(UIElement sender, Point clickPos)
     {
-        var item = FindVisualItemAtPoint(canvas, clickPos);
+        var item = FindVisualItemAtPoint(sender, clickPos);
         if (item is not null)
         {
             if (item.LockRegion is not null)
